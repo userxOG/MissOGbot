@@ -1,3 +1,5 @@
 python-dotenv
 pyTelegramBotAPI
 openai==0.28
+Flask
+requests
