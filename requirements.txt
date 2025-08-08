@@ -1,0 +1,3 @@
+python-dotenv
+pyTelegramBotAPI
+openai==0.28
