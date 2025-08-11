@@ -1,12 +1,7 @@
 import os
-import time
-import random
-import threading
-
 import telebot
 from telebot import types
 import openai
-from flask import Flask, request
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -21,9 +16,6 @@ if not BOT_TOKEN or not OPENAI_API_KEY:
 bot = telebot.TeleBot(BOT_TOKEN)
 openai.api_key = OPENAI_API_KEY
 
-app = Flask(__name__)
-
-# Constants
 GROUP_INVITE_LINK = "https://t.me/YourGroupLink"  # Replace this with your group invite link
 NEWS_CHANNEL_LINK = "https://t.me/MissOG_News"    # Replace this with your news channel link
 
@@ -63,13 +55,6 @@ def generate_ai_response(prompt, user_id):
         return reply
     except Exception:
         return "Oops! Some technical problem occurred, please try again later. 😓"
-
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    json_str = request.get_data().decode("UTF-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return "!", 200
 
 @bot.message_handler(commands=["start", "help"])
 def send_welcome(message):
@@ -142,13 +127,6 @@ def handle_all_messages(message):
     else:
         bot.send_message(message.chat.id, "What do you want to say? Mention me or say 'baby' to talk. 😘")
 
-def run_bot():
-    # Use polling in a separate thread if you want
-    bot.infinity_polling()
-
 if __name__ == "__main__":
-    # To use webhook, deploy and configure your server URL + BOT_TOKEN route accordingly
-    print("MissOGbot is running with webhook support...")
-    # Run Flask app in a thread so polling can be used simultaneously (optional)
-    threading.Thread(target=run_bot).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    print("MissOGbot is running with polling...")
+    bot.infinity_polling()
