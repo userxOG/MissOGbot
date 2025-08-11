@@ -1,9 +1,11 @@
 import telebot
 import openai
 import os
+import re
 from flask import Flask, request
 from dotenv import load_dotenv
 from telebot import types
+from langdetect import detect
 
 # Load environment variables
 load_dotenv()
@@ -18,155 +20,178 @@ BOT_ABOUT = "Elegant group manager. Sweet, smart & made with love by OG. Here to
 BOT_DESC = "Hello! I'm Miss OG, your elegant Telegram companion. Here to help you manage your groups smartly, respond sweetly when called, and bring calm & class to every chat."
 BOT_UPDATES = "@MissOG_News"
 BOT_CLONE = "@MissOG_CloneBot"
-OWNER_INFO = "I'm OG's baby 💖, made with love and care by him 😘"
+OWNER_USERNAME = "userxOG"  # Without @
 
-OWNER_USERNAME = "userxOG"  # OG's Telegram username without @
+# Expanded abusive words in multiple languages
+ABUSIVE_WORDS = {
+    "randi", "madrchd", "bhosdike", "lund", "chutiya", "bitch", "asshole", "mf",
+    "bc", "mc", "bkl", "fuck", "shit", "slut", "idiot", "harami", "kutte", "kamine",
+    "сука", "блядь", "пидор", "puta", "mierda", "imbécil", "cabrón"
+}
 
-ABUSIVE_WORDS = {"randi", "madrchd", "benched", "bc", "mc", "bkl"}
-
-user_data = {}  # Store user info like nickname, language, warnings
+user_data = {}  # Store language, nickname, warnings, topic lock
 
 def is_abusive(text):
-    text_lower = text.lower()
-    for w in ABUSIVE_WORDS:
-        if w in text_lower:
-            return True
-    return False
+    t = text.lower()
+    return any(w in t for w in ABUSIVE_WORDS)
 
 def get_nickname(user_id):
-    return user_data.get(user_id, {}).get("nickname", "baby")
+    return user_data.get(user_id, {}).get("nickname", f"{user_id}")
 
-def handle_owner_query(text):
-    triggers = ["owner", "creator", "who made you", "who is your owner", "kisne banaya", "tumhara malik", "creator kaun"]
-    lowered = text.lower()
-    if any(t in lowered for t in triggers):
-        return OWNER_INFO
-    if OWNER_USERNAME.lower() in lowered:
-        return OWNER_INFO
+def handle_owner_query(message):
+    text = message.text.lower()
+    triggers = [
+        "owner", "creator", "who made you", "kisne banaya", "malik", "creator kaun",
+        "baby", "hubby", "husband", "jaanu", "patidev"
+    ]
+    if any(t in text for t in triggers) or OWNER_USERNAME.lower() in text:
+        if message.from_user.username and message.from_user.username.lower() == OWNER_USERNAME.lower():
+            return "You ❤️"
+        else:
+            return f"Nice try 😏 But my baby is @{OWNER_USERNAME} only. You can be a friend tho 😘"
     return None
+
+def language_mismatch(user_id, text):
+    chosen_lang = user_data.get(user_id, {}).get("language")
+    if not chosen_lang:
+        return False
+    try:
+        detected = detect(text)
+        if chosen_lang.lower() == "english" and detected != "en":
+            return True
+        if chosen_lang.lower() == "hindi" and detected != "hi":
+            return True
+    except:
+        pass
+    return False
 
 def generate_ai_response(prompt, user_id):
     nickname = get_nickname(user_id)
     system_prompt = (
         f"You are Miss OG, a loving but slightly savage AI assistant with desi swag. "
-        f"Address the user as @{nickname}. Use emojis and expressive, slightly aggressive language. "
+        f"Address the user as {nickname}. Use emojis and expressive, slightly aggressive language. "
         f"Keep answers short and sweet. Always end with a friendly question to keep the conversation going."
     )
-    try:
-        completion = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=150,
-            temperature=0.9,
-            n=1,
-        )
-        return completion.choices[0].message.content.strip()
-    except Exception as e:
-        print("API Error:", e)
-        return "Oops! Some technical issue happened, try again later. 😓"
-
-def should_reply(message):
-    text = message.text.lower() if message.text else ""
-    is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.username == bot.get_me().username
-    return (
-        is_reply_to_bot
-        or f"@{bot.get_me().username.lower()}" in text
-        or "baby" in text
-        or "miss og" in text
+    completion = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=150,
+        temperature=0.9,
+        n=1,
     )
+    return completion.choices[0].message.content.strip()
 
-# Private chat welcome message with buttons
-def send_welcome_private(chat_id):
+# Welcome message for private/group
+def send_welcome(chat_id, is_group=False):
     markup = types.InlineKeyboardMarkup(row_width=2)
+    bot_username = bot.get_me().username
     markup.add(
-        types.InlineKeyboardButton("Join Group", url="https://t.me/YourGroupLink"),
-        types.InlineKeyboardButton("MissOG_News", url="https://t.me/MissOG_News"),
-        types.InlineKeyboardButton("Talk More 💬", callback_data="talk_more"),
-        types.InlineKeyboardButton("Game 🎮 (Soon)", callback_data="game_soon"),
+        types.InlineKeyboardButton("➕ Add Me to Group", url=f"https://t.me/{bot_username}?startgroup=true"),
+        types.InlineKeyboardButton("📢 MissOG_News", url="https://t.me/MissOG_News"),
+        types.InlineKeyboardButton("💬 Talk More", callback_data="talk_more"),
+        types.InlineKeyboardButton("🎮 Game (Soon)", callback_data="game_soon"),
     )
-    welcome_text = (
-        "👋 Hey! Welcome to Miss OG Bot!\n\n"
-        "I'm your loving, caring, slightly savage AI assistant. "
-        "Click below to join our group, get the latest news, chat more, or try games soon! 😘"
+    intro = (
+        f"👋 Hey! Welcome to Miss OG Bot!\n\n"
+        f"I'm your loving, caring, slightly savage AI assistant. "
+        f"Click below to add me to your group, get the latest news, chat more, or try games soon! 😘"
     )
-    bot.send_message(chat_id, welcome_text, reply_markup=markup)
+    if is_group:
+        intro = f"Hello Group! 🎉 I’m {BOT_NAME} — {BOT_ABOUT}\n\n" + intro
+    bot.send_message(chat_id, intro, reply_markup=markup)
 
 @bot.message_handler(commands=["start", "help"])
 def handle_start(message):
     if message.chat.type == "private":
-        send_welcome_private(message.chat.id)
+        send_welcome(message.chat.id, is_group=False)
     else:
-        bot.reply_to(message, "Hey! Mention me or say 'baby' to chat with me. 😘")
+        send_welcome(message.chat.id, is_group=True)
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     user_id = call.from_user.id
-
     if call.data == "talk_more":
-        msg = (
-            "Which language would you like to talk in? And what should I call you? 🤔\n\n"
-            "Reply like this:\nEnglish John"
-        )
-        bot.send_message(call.message.chat.id, msg)
+        username = call.from_user.username or ""
+        suggested_name = username if username else "your name"
+        msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {suggested_name}"
         user_data[user_id] = user_data.get(user_id, {})
         user_data[user_id]["awaiting_lang_nick"] = True
-
+        bot.send_message(call.message.chat.id, msg)
     elif call.data == "game_soon":
-        bot.answer_callback_query(call.id, "Game feature coming soon, stay tuned! 🎮")
+        bot.answer_callback_query(call.id, "🎮 Game feature coming soon, stay tuned!")
     else:
-        bot.answer_callback_query(call.id, "Unknown option selected.")
+        bot.answer_callback_query(call.id, "Unknown option.")
 
 @bot.message_handler(func=lambda m: True)
 def handle_all_messages(message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
 
-    # First check if it is an owner query
-    owner_reply = handle_owner_query(text)
+    # Owner query handling
+    owner_reply = handle_owner_query(message)
     if owner_reply:
         bot.send_message(message.chat.id, owner_reply)
         return
 
-    # Handle language and nickname after Talk More button
+    # Language + nickname setup
     if user_data.get(user_id, {}).get("awaiting_lang_nick"):
         parts = text.split()
         if len(parts) >= 2:
-            lang = parts[0].lower()
-            nickname = " ".join(parts[1:])
+            lang = parts[0]
+            nickname = " ".join(parts[1:]).replace("@", "")
             user_data[user_id]["language"] = lang
             user_data[user_id]["nickname"] = nickname
             user_data[user_id]["awaiting_lang_nick"] = False
-            bot.send_message(message.chat.id, f"Alright {nickname}, I'll chat with you in {lang}. 😘")
+            bot.send_message(message.chat.id, f"Alright {nickname}, I'll chat with you in {lang}. 😘", reply_to_message_id=message.message_id)
         else:
             bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish John")
+        return
+
+    # Language mismatch reminder
+    if language_mismatch(user_id, text):
+        chosen_lang = user_data[user_id]["language"]
+        bot.send_message(message.chat.id, f"You chose {chosen_lang} 😏 Speak in it, or tell me if you want to change.")
         return
 
     # Abusive word handling
     if is_abusive(text):
         warned = user_data.get(user_id, {}).get("warned", False)
         if not warned:
-            bot.send_message(message.chat.id, "Hey! Don't use bad words here! 😠 If you do again, I won't talk to you. Got it? 😤")
+            bot.send_message(message.chat.id, "Hey! Don't use bad words! 😠 Do it again and I won't talk to you.")
             user_data.setdefault(user_id, {})["warned"] = True
         return
     else:
-        if user_data.get(user_id, {}).get("warned", False):
+        if user_data.get(user_id, {}).get("warned"):
             user_data[user_id]["warned"] = False
-            bot.send_message(message.chat.id, "Okay, you're good now. Let's chat. Miss OG is here for you. 😌")
 
-    # Reply only when triggered
-    text_lower = text.lower()
+    # Topic lock mode
+    if re.search(r"(let'?s talk about|let's play|baat kare|game khele)", text.lower()):
+        topic = text
+        user_data[user_id]["topic"] = topic
+        bot.send_message(message.chat.id, f"Alright, we’re sticking to this topic: {topic} 😉")
+        return
+    if "topic" in user_data.get(user_id, {}) and not re.search(r"(stop|change topic)", text.lower()):
+        ai_reply = generate_ai_response(text, user_id)
+        bot.send_message(message.chat.id, ai_reply)
+        return
+    elif re.search(r"(stop|change topic)", text.lower()):
+        user_data[user_id].pop("topic", None)
+        bot.send_message(message.chat.id, "Okay, topic unlocked. What now? 😏")
+        return
+
+    # Normal reply triggers
     triggers = ["miss og", "missog", "baby", f"@{bot.get_me().username.lower()}", "miss og bot"]
-    if any(t in text_lower for t in triggers) or (message.reply_to_message and message.reply_to_message.from_user.username == bot.get_me().username):
+    if any(t in text.lower() for t in triggers) or (message.reply_to_message and message.reply_to_message.from_user.username == bot.get_me().username):
         ai_reply = generate_ai_response(text, user_id)
         bot.send_message(message.chat.id, ai_reply)
     else:
         if message.chat.type == "private":
-            bot.send_message(message.chat.id, "Mention me or say 'baby' to talk. 😘")
+            bot.send_message(message.chat.id, f"{get_nickname(user_id)}, mention me or say 'MISS OG' to talk 😘", reply_to_message_id=message.message_id)
 
-# Flask app for webhook (unchanged from your original code)
+# Flask app for webhook
 app = Flask(__name__)
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
@@ -181,8 +206,7 @@ def index():
     return "Miss OG is alive 💖"
 
 if __name__ == "__main__":
-    import requests
-    render_url = os.getenv("RENDER_EXTERNAL_URL")  # Render auto sets this
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
     if render_url:
         webhook_url = f"{render_url}/{BOT_TOKEN}"
         bot.remove_webhook()
@@ -190,5 +214,4 @@ if __name__ == "__main__":
         print(f"Webhook set to: {webhook_url}")
     else:
         print("RENDER_EXTERNAL_URL not found! Set webhook manually if needed.")
-
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
