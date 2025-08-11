@@ -1,11 +1,12 @@
-import telebot
-import openai
 import os
+import time
 import random
-import threading
+import telebot
+from telebot import types
+import openai
 from flask import Flask, request
 from dotenv import load_dotenv
-import time
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -15,9 +16,9 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 bot = telebot.TeleBot(BOT_TOKEN)
 openai.api_key = OPENAI_KEY
 
-BOT_USERNAME = bot.get_me().username if bot.get_me() else "MissOGbot"
+app = Flask(__name__)
 
-# Abusive words list (expand as needed)
+# Abusive words list
 ABUSIVE_WORDS = ["randi", "madarchod", "benched", "bc", "mc", "bkl", "kutti", "bullshit"]
 
 # Abusive replies variations
@@ -32,7 +33,6 @@ FORGIVE_REPLIES = [
     "Theek hai, ab pyaar se baat karte hain! Miss OG ready hai! 💖",
 ]
 
-# Auto follow-up messages (random, short)
 AUTO_FOLLOW_UPS = [
     "Miss OG yahin hai, @{username}! Kya haal?",
     "@{username}, OG tumhe miss kar rahi hai!",
@@ -41,24 +41,17 @@ AUTO_FOLLOW_UPS = [
     "OG tumhara intezaar kar rahi hai!",
 ]
 
-# Bandu patwao replies
 BANDI_REPLIES = [
     "Arre @{username}, OG tumhare liye bandi bhi laayegi, par pehle thoda charm dikhana padega! 😏🔥",
     "Bandi toh mil jayegi, bas OG ke level pe aao pehle! 😉",
     "Boss, OG ka magic chal jayega, bas thoda intezaar karo! 😘✨",
 ]
 
-# Owner info reply
 OWNER_INFO = "Main OG ki baby hu 💖, usne mujhe banaya hai — powered by love & care 😘"
 
-# Placeholder for user mute status due to abuse
 user_muted = {}
-
-# Placeholder for user nicknames (optional extension)
 user_nicknames = {}
-
-# Flask app
-app = Flask(__name__)
+last_message_time = {}
 
 def get_nickname(message):
     user_id = message.from_user.id
@@ -96,20 +89,18 @@ def get_ai_reply(user_message):
 
 def should_reply(message):
     text = message.text.lower() if message.text else ""
-    is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.username == BOT_USERNAME
+    bot_username = bot.get_me().username.lower() if bot.get_me() else "missogbot"
+    is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.username == bot_username
     return (
         is_reply_to_bot
-        or f"@{BOT_USERNAME.lower()}" in text
+        or f"@{bot_username}" in text
         or "baby" in text
         or "miss og" in text
     )
 
-# Store last message time per user to track silence for auto follow-up
-last_message_time = {}
-
-# Function to check inactivity and send auto follow-up
-def auto_follow_up_checker(chat_id, user_id, username):
-    time.sleep(120)  # 2 minutes
+# Auto follow-up thread function
+def auto_follow_up(chat_id, user_id, username):
+    time.sleep(120)  # 2 min
     current_time = time.time()
     if user_id in last_message_time and current_time - last_message_time[user_id] >= 120:
         msg = get_random_reply(AUTO_FOLLOW_UPS, username)
@@ -117,6 +108,25 @@ def auto_follow_up_checker(chat_id, user_id, username):
             bot.send_message(chat_id, msg)
         except Exception as e:
             print("Failed to send auto follow-up:", e)
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Add to Group", url="https://t.me/YourGroupLink"))
+    markup.add(types.InlineKeyboardButton("MissOG News Channel", url="https://t.me/MissOG_News"))
+    markup.add(types.InlineKeyboardButton("Talk More", callback_data="talk_more"))
+    markup.add(types.InlineKeyboardButton("Game (Soon)"))
+    
+    welcome_text = (
+        "Welcome to Miss OG! 💖\n"
+        "Use buttons below to interact.\n"
+        "Click 'Talk More' to chat in your language and set your nickname."
+    )
+    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "talk_more")
+def ask_language_and_nickname(call):
+    bot.send_message(call.message.chat.id, "Aap kiss language me mujhe baat karna chahte hain? Aur main aapko kya keh kar bulaun?")
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
@@ -126,36 +136,30 @@ def handle_message(message):
 
     last_message_time[user_id] = time.time()
 
-    # Check if user is muted due to abuse
     if is_user_muted(user_id):
-        # Ignore messages until user stops abuse (simple logic: if message has no abusive words)
         if contains_abuse(text):
-            return  # ignore message
+            return
         else:
             set_user_muted(user_id, False)
             reply = get_random_reply(FORGIVE_REPLIES, username)
             bot.reply_to(message, reply)
             return
 
-    # Abusive language check
     if contains_abuse(text):
         set_user_muted(user_id, True)
         reply = get_random_reply(ABUSIVE_REPLIES, username)
         bot.reply_to(message, reply)
         return
 
-    # Check for bandi patwao request
     if "bandi patwa do" in text:
         reply = get_random_reply(BANDI_REPLIES, username)
         bot.reply_to(message, reply)
         return
 
-    # Check for help request
     if "help" in text or "meri ek help" in text:
         bot.reply_to(message, f"Bol na, @{username}! Miss OG tumhari help ke liye ready hai! 💖")
         return
 
-    # Check for greetings or break words to send caring replies
     if text in ["hello", "break"]:
         caring_replies = [
             f"Miss OG tumhare saath hai, @{username}! Kya haal hai? Koi help chahiye toh bolo! 🙌🔥",
@@ -164,14 +168,13 @@ def handle_message(message):
         bot.reply_to(message, random.choice(caring_replies))
         return
 
-    # Check if message mentions bot or is reply to bot
     if should_reply(message):
         ai_reply = get_ai_reply(message.text)
         bot.reply_to(message, ai_reply)
         return
 
-    # Default reply (can customize or leave empty)
-    # bot.reply_to(message, f"Hey @{username}, Miss OG yahan hai! Kya baat karni hai? 😉")
+    # Start auto follow-up thread for inactivity
+    threading.Thread(target=auto_follow_up, args=(message.chat.id, user_id, username), daemon=True).start()
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
@@ -186,7 +189,7 @@ def index():
 
 if __name__ == "__main__":
     import requests
-    render_url = os.getenv("RENDER_EXTERNAL_URL")  # Render auto sets this
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
     if render_url:
         webhook_url = f"{render_url}/{BOT_TOKEN}"
         bot.remove_webhook()
