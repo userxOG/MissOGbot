@@ -36,28 +36,47 @@ def is_abusive(text):
 def get_nickname(user_id):
     name = user_data.get(user_id, {}).get("nickname")
     if name:
-        return name.capitalize()
+        return name.upper()
     # fallback to Telegram username if exists
-    try:
-        user = bot.get_chat(user_id)
-        if user.username:
-            return user.username.capitalize()
-    except Exception:
-        pass
-    return "Baby"
+    user = bot.get_chat_member(user_id, user_id)
+    if hasattr(user, "user") and user.user.username:
+        return user.user.username.upper()
+    return "BABY"
 
 def handle_owner_query(message):
     text = message.text.lower()
-    triggers = [
-        "owner", "creator", "who made you", "kisne banaya", "malik", "creator kaun",
-        "baby", "hubby", "husband", "jaanu", "patidev", "bf", "boyfriend", "partner", "bae"
+    user_id = message.from_user.id
+    username = message.from_user.username.lower() if message.from_user.username else ""
+
+    # Owner-related question phrases (strict context)
+    owner_questions = [
+        "owner", "creator", "who made you", "kisne banaya", "malik", "creator kaun"
     ]
-    if any(t in text for t in triggers) or OWNER_USERNAME.lower() in text:
-        if message.from_user.username and message.from_user.username.lower() == OWNER_USERNAME.lower():
+
+    # Casual affectionate words (for owner only)
+    affectionate_words = [
+        "baby", "hubby", "husband", "jaanu", "patidev", "bf", "boyfriend", "partner", "bae", "baby girl"
+    ]
+
+    # Check if message contains any owner question phrases
+    if any(phrase in text for phrase in owner_questions):
+        if username == OWNER_USERNAME.lower():
+            # Owner asking about self or bot
             return "You ❤️"
         else:
-            # cheeky shade for others
+            # Someone else asking about owner
             return f"Nice try 😏 But my baby is @{OWNER_USERNAME} only. You can be a friend tho 😘"
+
+    # If owner sends affectionate words, reply once with love
+    if username == OWNER_USERNAME.lower():
+        if any(word in text for word in affectionate_words):
+            if not user_data.get(user_id, {}).get("owner_affection_replied"):
+                user_data.setdefault(user_id, {})["owner_affection_replied"] = True
+                return "You ❤️"
+            else:
+                return None  # No repeated reply
+
+    # Default no special reply
     return None
 
 def language_mismatch(user_id, text):
@@ -127,7 +146,7 @@ def send_welcome(chat_id, is_group=False):
 def mention_user(message):
     user_id = message.from_user.id
     nickname = get_nickname(user_id)
-    # reply with mention in capitalized form
+    # reply with mention in CAPITAL letters
     bot_username = message.from_user.username
     if bot_username:
         mention = f"@{bot_username}"
@@ -173,11 +192,9 @@ def handle_start(message):
 def callback_handler(call):
     user_id = call.from_user.id
     if call.data == "talk_more":
-        username = call.from_user.username or "yourname"  # asli username, case preserved
-        msg = (
-            "Which language would you like to talk in? And what should I call you? 🤔\n\n"
-            f"Reply like this:\nEnglish {username}"
-        )
+        username = call.from_user.username or "YOURNAME"
+        suggested_name = username[0].upper() + username[1:].lower() if username else "YourName"
+        msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {suggested_name}"
         user_data[user_id] = user_data.get(user_id, {})
         user_data[user_id]["awaiting_lang_nick"] = True
         bot.send_message(call.message.chat.id, msg)
@@ -186,7 +203,7 @@ def callback_handler(call):
     else:
         bot.answer_callback_query(call.id, "Unknown option.")
 
-@bot.message_handler(func=lambda message: True)
+@bot.message_handler(func=lambda m: True)
 def handle_all_messages(message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
@@ -197,25 +214,25 @@ def handle_all_messages(message):
     user_data[user_id]["chat_id"] = message.chat.id
     user_data[user_id]["last_message_id"] = message.message_id
 
+    # Owner query handling
+    owner_reply = handle_owner_query(message)
+    if owner_reply:
+        bot.send_message(message.chat.id, owner_reply)
+        return
+
     # Language + nickname setup
     if user_data.get(user_id, {}).get("awaiting_lang_nick"):
         parts = text.split()
         if len(parts) >= 2:
             lang = parts[0]
-            nickname_raw = " ".join(parts[1:]).replace("@", "")
-            nickname = nickname_raw.capitalize()  # first letter capital, rest small
+            nickname = " ".join(parts[1:]).replace("@", "")
+            nickname = nickname[0].upper() + nickname[1:].lower() if len(nickname) > 1 else nickname.upper()
             user_data[user_id]["language"] = lang
             user_data[user_id]["nickname"] = nickname
             user_data[user_id]["awaiting_lang_nick"] = False
             bot.send_message(message.chat.id, f"Alright {nickname}, I'll chat with you in {lang}. 😘", reply_to_message_id=message.message_id)
         else:
-            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish John")
-        return
-
-    # Owner query handling
-    owner_reply = handle_owner_query(message)
-    if owner_reply:
-        bot.send_message(message.chat.id, owner_reply)
+            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish JOHN")
         return
 
     # Language mismatch reminder
