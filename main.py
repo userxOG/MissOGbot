@@ -27,10 +27,7 @@ ABUSIVE_WORDS = {
     "сука", "блядь", "пидор", "puta", "mierda", "imbécil", "cabrón"
 }
 
-# Accepted short acknowledgements for language confirmation
-SHORT_ACKS = {"ok", "yes", "sure", "fine", "alright", "done", "got it", "roger"}
-
-user_data = {}  # Stores: language, nickname (CAPS), warnings, topic lock, last_active, awaiting_lang_nick, language_confirmed
+user_data = {}  # Stores: language, nickname (CAPS), warnings, topic lock, last_active, awaiting_lang_nick
 
 def is_abusive(text):
     t = text.lower()
@@ -39,15 +36,15 @@ def is_abusive(text):
 def get_nickname(user_id):
     name = user_data.get(user_id, {}).get("nickname")
     if name:
-        return name.upper()
+        return name.capitalize()
     # fallback to Telegram username if exists
     try:
-        user = bot.get_chat_member(user_id, user_id)
-        if hasattr(user, "user") and user.user.username:
-            return user.user.username.upper()
+        user = bot.get_chat(user_id)
+        if user.username:
+            return user.username.capitalize()
     except Exception:
         pass
-    return "BABY"
+    return "Baby"
 
 def handle_owner_query(message):
     text = message.text.lower()
@@ -130,7 +127,7 @@ def send_welcome(chat_id, is_group=False):
 def mention_user(message):
     user_id = message.from_user.id
     nickname = get_nickname(user_id)
-    # reply with mention in CAPITAL letters
+    # reply with mention in capitalized form
     bot_username = message.from_user.username
     if bot_username:
         mention = f"@{bot_username}"
@@ -176,9 +173,11 @@ def handle_start(message):
 def callback_handler(call):
     user_id = call.from_user.id
     if call.data == "talk_more":
-        username = call.from_user.username or "YOURNAME"
-        suggested_name = username.upper()
-        msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {suggested_name}"
+        username = call.from_user.username or "yourname"  # asli username, case preserved
+        msg = (
+            "Which language would you like to talk in? And what should I call you? 🤔\n\n"
+            f"Reply like this:\nEnglish {username}"
+        )
         user_data[user_id] = user_data.get(user_id, {})
         user_data[user_id]["awaiting_lang_nick"] = True
         bot.send_message(call.message.chat.id, msg)
@@ -187,7 +186,7 @@ def callback_handler(call):
     else:
         bot.answer_callback_query(call.id, "Unknown option.")
 
-@bot.message_handler(func=lambda m: True)
+@bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
@@ -198,50 +197,31 @@ def handle_all_messages(message):
     user_data[user_id]["chat_id"] = message.chat.id
     user_data[user_id]["last_message_id"] = message.message_id
 
+    # Language + nickname setup
+    if user_data.get(user_id, {}).get("awaiting_lang_nick"):
+        parts = text.split()
+        if len(parts) >= 2:
+            lang = parts[0]
+            nickname_raw = " ".join(parts[1:]).replace("@", "")
+            nickname = nickname_raw.capitalize()  # first letter capital, rest small
+            user_data[user_id]["language"] = lang
+            user_data[user_id]["nickname"] = nickname
+            user_data[user_id]["awaiting_lang_nick"] = False
+            bot.send_message(message.chat.id, f"Alright {nickname}, I'll chat with you in {lang}. 😘", reply_to_message_id=message.message_id)
+        else:
+            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish John")
+        return
+
     # Owner query handling
     owner_reply = handle_owner_query(message)
     if owner_reply:
         bot.send_message(message.chat.id, owner_reply)
         return
 
-    # Language + nickname setup
-    if user_data[user_id].get("awaiting_lang_nick"):
-        parts = text.split()
-        if len(parts) >= 2:
-            lang = parts[0]
-            nickname = " ".join(parts[1:]).replace("@", "").upper()
-            user_data[user_id]["language"] = lang
-            user_data[user_id]["nickname"] = nickname
-            user_data[user_id]["awaiting_lang_nick"] = False
-            user_data[user_id]["language_confirmed"] = False  # Reset confirmation on new language choice
-            bot.send_message(message.chat.id, f"Alright {nickname}, I'll chat with you in {lang}. 😘", reply_to_message_id=message.message_id)
-        else:
-            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish userxOG")
-        return
-
-    # Check if language confirmation is pending
-    lang = user_data[user_id].get("language")
-    lang_confirmed = user_data[user_id].get("language_confirmed", False)
-    if lang and not lang_confirmed:
-        # If user reply is short acknowledgement in accepted list
-        if text.lower() in SHORT_ACKS:
-            user_data[user_id]["language_confirmed"] = True
-            bot.send_message(message.chat.id, f"Great! Let's continue in {lang} 😎", reply_to_message_id=message.message_id)
-            return
-        else:
-            # If message is meaningful, consider confirmed too
-            if len(text) > 3:
-                user_data[user_id]["language_confirmed"] = True
-                # Let it pass below for normal processing
-            else:
-                # Else remind politely
-                bot.send_message(message.chat.id, f"You chose {lang} 😏 Please speak only in that language or tell me if you want to change.", reply_to_message_id=message.message_id)
-                return
-
     # Language mismatch reminder
     if language_mismatch(user_id, text):
         chosen_lang = user_data[user_id]["language"]
-        bot.send_message(message.chat.id, f"You chose {chosen_lang} 😏 Please speak only in that language or tell me if you want to change.", reply_to_message_id=message.message_id)
+        bot.send_message(message.chat.id, f"You chose {chosen_lang} 😏 Please speak only in that language or tell me if you want to change.")
         return
 
     # Abusive word handling
