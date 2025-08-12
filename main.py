@@ -111,7 +111,6 @@ def send_welcome(chat_id, is_group=False):
             "I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
             "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
             "Click below to add me to more groups, get the latest news, chat more, or explore games (coming soon 🎮).\n\n"
-            "[Add Me to Group] | [News] | [Talk More 💬] | [Game 🎮 Soon]"
         )
     else:
         intro = (
@@ -119,7 +118,6 @@ def send_welcome(chat_id, is_group=False):
             "I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
             "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
             "Click below to add me to more groups, get the latest news, chat more, or explore games (coming soon 🎮).\n\n"
-            "[Add Me to Group] | [News] | [Talk More 💬] | [Game 🎮 Soon]"
         )
     bot.send_message(chat_id, intro, reply_markup=markup)
 
