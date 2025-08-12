@@ -18,34 +18,43 @@ bot = telebot.TeleBot(BOT_TOKEN)
 openai.api_key = OPENAI_KEY
 
 BOT_NAME = "Miss OG"
-OWNER_USERNAME = "userxOG"  # Without @
-SPECIAL_USER_ID = None  # Set your Telegram numeric ID here to always get 'baby' mention
+OWNER_USERNAME = "userxOG"  # Without @, and your special ID to identify as baby
 
+# Expanded abusive words in multiple languages
 ABUSIVE_WORDS = {
     "randi", "madrchd", "bhosdike", "lund", "chutiya", "bitch", "asshole", "mf",
     "bc", "mc", "bkl", "fuck", "shit", "slut", "idiot", "harami", "kutte", "kamine",
     "сука", "блядь", "пидор", "puta", "mierda", "imbécil", "cabrón"
 }
 
-user_data = {}  # Stores user info like language, nickname, warnings, topic lock etc.
+user_data = {}  # Stores: language, nickname, warnings, topic lock, last_active, awaiting_lang_nick
+
+# Your Telegram user ID (numeric) to identify you as special baby
+SPECIAL_USER_ID = 8457816680  # <-- Set your Telegram numeric user id here, e.g. 123456789
 
 def is_abusive(text):
     t = text.lower()
     return any(w in t for w in ABUSIVE_WORDS)
 
 def format_nickname(nickname):
+    # Capitalize first letter, rest small
     if len(nickname) > 1:
         return nickname[0].upper() + nickname[1:].lower()
     else:
         return nickname.upper()
 
 def get_user_display_name(message):
+    # Return first_name + last_name if available, else first_name only
     first = message.from_user.first_name or ""
     last = message.from_user.last_name or ""
     full_name = (first + " " + last).strip()
-    return full_name if full_name else "User"
+    if full_name:
+        return full_name
+    else:
+        return "User"
 
 def get_username_or_display(message):
+    # Returns @username if exists, else display name without @
     username = message.from_user.username
     if username:
         return "@" + username
@@ -57,15 +66,19 @@ def get_nickname(user_id):
     nickname = data.get("nickname")
     if nickname:
         return format_nickname(nickname)
+    # No nickname set
     return None
 
 def get_mention(message):
     user_id = message.from_user.id
-    if SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID:8457816680
+    # If this user is the special baby, always "baby"
+    if SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID:
         return "baby"
+    # Else if user has nickname, use that
     nickname = get_nickname(user_id)
     if nickname:
         return nickname
+    # Else use username with @ or display name
     return get_username_or_display(message)
 
 def handle_owner_query(message):
@@ -97,6 +110,8 @@ def language_mismatch(user_id, text):
     return False
 
 def generate_ai_response(prompt, user_id):
+    mention = None
+    # We can pass mention to system prompt if needed for style
     mention = "baby" if (SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID) else get_nickname(user_id) or "User"
     system_prompt = (
         f"You are Miss OG, a loving but slightly savage AI assistant with desi swag. "
@@ -144,6 +159,9 @@ def send_welcome(chat_id, is_group=False):
         )
     bot.send_message(chat_id, intro, reply_markup=markup)
 
+def mention_user(message):
+    return get_mention(message)
+
 def remind_to_tag(user_id, chat_id, last_message_id):
     mention = "baby" if (SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID) else get_nickname(user_id) or "User"
     messages = [
@@ -165,9 +183,9 @@ def user_inactive_checker():
             last_message_id = data.get("last_message_id")
             topic = data.get("topic")
             if last_active and chat_id and last_message_id and topic:
-                if now - last_active > 120:  # 2 min inactivity
+                if now - last_active > 120:  # 2 minutes inactivity
                     remind_to_tag(user_id, chat_id, last_message_id)
-                    user_data[user_id]["last_active"] = now + 180  # 3 mins pause
+                    user_data[user_id]["last_active"] = now + 180  # wait 3 mins more
         time.sleep(30)
 
 @bot.message_handler(commands=["start", "help"])
@@ -182,7 +200,8 @@ def callback_handler(call):
     user_id = call.from_user.id
     if call.data == "talk_more":
         username = call.from_user.username or "YOURNAME"
-        msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {username}"
+        suggested_name = username
+        msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {suggested_name}"
         user_data[user_id] = user_data.get(user_id, {})
         user_data[user_id]["awaiting_lang_nick"] = True
         bot.send_message(call.message.chat.id, msg)
@@ -196,16 +215,19 @@ def handle_all_messages(message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
 
+    # Update last_active and chat info for inactivity tracking
     user_data.setdefault(user_id, {})
     user_data[user_id]["last_active"] = time.time()
     user_data[user_id]["chat_id"] = message.chat.id
     user_data[user_id]["last_message_id"] = message.message_id
 
+    # Owner query handling
     owner_reply = handle_owner_query(message)
     if owner_reply:
         bot.send_message(message.chat.id, owner_reply)
         return
 
+    # Language + nickname setup
     if user_data.get(user_id, {}).get("awaiting_lang_nick"):
         parts = text.split()
         if len(parts) >= 2:
@@ -219,11 +241,13 @@ def handle_all_messages(message):
             bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish OG")
         return
 
+    # Language mismatch reminder
     if language_mismatch(user_id, text):
         chosen_lang = user_data[user_id]["language"]
         bot.send_message(message.chat.id, f"You chose {chosen_lang} 😏 Please speak only in that language or tell me if you want to change.")
         return
 
+    # Abusive word handling
     if is_abusive(text):
         warned = user_data.get(user_id, {}).get("warned", False)
         if not warned:
@@ -234,6 +258,7 @@ def handle_all_messages(message):
         if user_data.get(user_id, {}).get("warned"):
             user_data[user_id]["warned"] = False
 
+    # Topic lock mode
     locked_topic = user_data.get(user_id, {}).get("topic")
     if locked_topic:
         if re.search(r"\b(stop|change topic|end topic|exit)\b", text.lower()):
@@ -257,14 +282,17 @@ def handle_all_messages(message):
         ai_reply = generate_ai_response(text, user_id)
         bot.send_message(message.chat.id, ai_reply, reply_to_message_id=message.message_id)
     else:
-        mention = get_mention(message)
         if message.chat.type == "private":
+            mention = get_mention(message)
             bot.send_message(message.chat.id, f"{mention}, please tag me or say 'MISS OG' to chat 😘", reply_to_message_id=message.message_id)
         else:
+            mention = get_mention(message)
             bot.send_message(message.chat.id, f"{mention}, please mention me or say 'MISS OG' to talk! 😘", reply_to_message_id=message.message_id)
 
+# Background thread to check inactivity
 threading.Thread(target=user_inactive_checker, daemon=True).start()
 
+# Flask app for webhook
 app = Flask(__name__)
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
