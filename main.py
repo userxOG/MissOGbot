@@ -110,14 +110,14 @@ def send_welcome(chat_id, is_group=False):
             "✨️ Hello Group!\n"
             "I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
             "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
-            "Click below to add me to more groups, get the latest news, chat more, or explore games (coming soon 🎮).\n\n"
+            "Click below to add me to more groups, get the latest news, chat more, or explore games. \n"
         )
     else:
         intro = (
             "👋 Hey! Welcome to Miss OG Bot!\n"
             "I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
             "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
-            "Click below to add me to more groups, get the latest news, chat more, or explore games (coming soon 🎮).\n\n"
+            "Click below to add me to more groups, get the latest news, chat more, or explore games. \n"
         )
     bot.send_message(chat_id, intro, reply_markup=markup)
 
