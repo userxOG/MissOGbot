@@ -19,64 +19,66 @@ openai.api_key = OPENAI_KEY
 
 BOT_NAME = "Miss OG"
 OWNER_USERNAME = "userxOG"  # Without @
+SPECIAL_USER_ID = None  # Set your Telegram numeric ID here to always get 'baby' mention
 
-# Expanded abusive words in multiple languages
 ABUSIVE_WORDS = {
     "randi", "madrchd", "bhosdike", "lund", "chutiya", "bitch", "asshole", "mf",
     "bc", "mc", "bkl", "fuck", "shit", "slut", "idiot", "harami", "kutte", "kamine",
     "сука", "блядь", "пидор", "puta", "mierda", "imbécil", "cabrón"
 }
 
-user_data = {}  # Stores: language, nickname (CAPS), warnings, topic lock, last_active, awaiting_lang_nick
+user_data = {}  # Stores user info like language, nickname, warnings, topic lock etc.
 
 def is_abusive(text):
     t = text.lower()
     return any(w in t for w in ABUSIVE_WORDS)
 
+def format_nickname(nickname):
+    if len(nickname) > 1:
+        return nickname[0].upper() + nickname[1:].lower()
+    else:
+        return nickname.upper()
+
+def get_user_display_name(message):
+    first = message.from_user.first_name or ""
+    last = message.from_user.last_name or ""
+    full_name = (first + " " + last).strip()
+    return full_name if full_name else "User"
+
+def get_username_or_display(message):
+    username = message.from_user.username
+    if username:
+        return "@" + username
+    else:
+        return get_user_display_name(message)
+
 def get_nickname(user_id):
-    name = user_data.get(user_id, {}).get("nickname")
-    if name:
-        return name.upper()
-    # fallback to Telegram username if exists
-    user = bot.get_chat_member(user_id, user_id)
-    if hasattr(user, "user") and user.user.username:
-        return user.user.username.upper()
-    return "BABY"
+    data = user_data.get(user_id, {})
+    nickname = data.get("nickname")
+    if nickname:
+        return format_nickname(nickname)
+    return None
+
+def get_mention(message):
+    user_id = message.from_user.id
+    if SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID:8457816680
+        return "baby"
+    nickname = get_nickname(user_id)
+    if nickname:
+        return nickname
+    return get_username_or_display(message)
 
 def handle_owner_query(message):
     text = message.text.lower()
-    user_id = message.from_user.id
-    username = message.from_user.username.lower() if message.from_user.username else ""
-
-    # Owner-related question phrases (strict context)
-    owner_questions = [
-        "owner", "creator", "who made you", "kisne banaya", "malik", "creator kaun"
+    triggers = [
+        "owner", "creator", "who made you", "kisne banaya", "malik", "creator kaun",
+        "baby", "hubby", "husband", "jaanu", "patidev", "bf", "boyfriend", "partner", "bae"
     ]
-
-    # Casual affectionate words (for owner only)
-    affectionate_words = [
-        "baby", "hubby", "husband", "jaanu", "patidev", "bf", "boyfriend", "partner", "bae", "baby girl"
-    ]
-
-    # Check if message contains any owner question phrases
-    if any(phrase in text for phrase in owner_questions):
-        if username == OWNER_USERNAME.lower():
-            # Owner asking about self or bot
+    if any(t in text for t in triggers) or OWNER_USERNAME.lower() in text:
+        if message.from_user.username and message.from_user.username.lower() == OWNER_USERNAME.lower():
             return "You ❤️"
         else:
-            # Someone else asking about owner
             return f"Nice try 😏 But my baby is @{OWNER_USERNAME} only. You can be a friend tho 😘"
-
-    # If owner sends affectionate words, reply once with love
-    if username == OWNER_USERNAME.lower():
-        if any(word in text for word in affectionate_words):
-            if not user_data.get(user_id, {}).get("owner_affection_replied"):
-                user_data.setdefault(user_id, {})["owner_affection_replied"] = True
-                return "You ❤️"
-            else:
-                return None  # No repeated reply
-
-    # Default no special reply
     return None
 
 def language_mismatch(user_id, text):
@@ -86,7 +88,6 @@ def language_mismatch(user_id, text):
     try:
         detected = detect(text)
         chosen = chosen_lang.lower()
-        # Simple mapping for English and Hindi only, add more if needed
         if chosen == "english" and detected != "en":
             return True
         if chosen == "hindi" and detected != "hi":
@@ -96,10 +97,10 @@ def language_mismatch(user_id, text):
     return False
 
 def generate_ai_response(prompt, user_id):
-    nickname = get_nickname(user_id)
+    mention = "baby" if (SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID) else get_nickname(user_id) or "User"
     system_prompt = (
         f"You are Miss OG, a loving but slightly savage AI assistant with desi swag. "
-        f"Address the user as {nickname}. Use emojis and expressive, slightly aggressive language. "
+        f"Address the user as {mention}. Use emojis and expressive, slightly aggressive language. "
         f"Keep answers short and sweet. Always end with a friendly question to keep the conversation going."
     )
     try:
@@ -143,24 +144,13 @@ def send_welcome(chat_id, is_group=False):
         )
     bot.send_message(chat_id, intro, reply_markup=markup)
 
-def mention_user(message):
-    user_id = message.from_user.id
-    nickname = get_nickname(user_id)
-    # reply with mention in CAPITAL letters
-    bot_username = message.from_user.username
-    if bot_username:
-        mention = f"@{bot_username}"
-    else:
-        mention = nickname
-    return mention
-
 def remind_to_tag(user_id, chat_id, last_message_id):
-    nickname = get_nickname(user_id)
+    mention = "baby" if (SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID) else get_nickname(user_id) or "User"
     messages = [
-        f"{nickname}, tag me or say 'MISS OG' to talk! 😘",
-        f"Hey {nickname}, don't forget to mention me or say 'MISS OG'! 😉",
-        f"{nickname}, you gotta tag me or call me 'MISS OG' to keep chatting! 😏",
-        f"{nickname}, tag me please or say 'MISS OG' so I know you're talking to me! 😘"
+        f"{mention}, tag me or say 'MISS OG' to talk! 😘",
+        f"Hey {mention}, don't forget to mention me or say 'MISS OG'! 😉",
+        f"{mention}, you gotta tag me or call me 'MISS OG' to keep chatting! 😏",
+        f"{mention}, tag me please or say 'MISS OG' so I know you're talking to me! 😘"
     ]
     import random
     msg = random.choice(messages)
@@ -175,10 +165,9 @@ def user_inactive_checker():
             last_message_id = data.get("last_message_id")
             topic = data.get("topic")
             if last_active and chat_id and last_message_id and topic:
-                if now - last_active > 120:  # 2 minutes inactivity
+                if now - last_active > 120:  # 2 min inactivity
                     remind_to_tag(user_id, chat_id, last_message_id)
-                    # Update last_active so message not spammed continuously
-                    user_data[user_id]["last_active"] = now + 180  # wait 3 mins more
+                    user_data[user_id]["last_active"] = now + 180  # 3 mins pause
         time.sleep(30)
 
 @bot.message_handler(commands=["start", "help"])
@@ -193,8 +182,7 @@ def callback_handler(call):
     user_id = call.from_user.id
     if call.data == "talk_more":
         username = call.from_user.username or "YOURNAME"
-        suggested_name = username[0].upper() + username[1:].lower() if username else "YourName"
-        msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {suggested_name}"
+        msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {username}"
         user_data[user_id] = user_data.get(user_id, {})
         user_data[user_id]["awaiting_lang_nick"] = True
         bot.send_message(call.message.chat.id, msg)
@@ -208,40 +196,34 @@ def handle_all_messages(message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
 
-    # Update last_active and chat info for inactivity tracking
     user_data.setdefault(user_id, {})
     user_data[user_id]["last_active"] = time.time()
     user_data[user_id]["chat_id"] = message.chat.id
     user_data[user_id]["last_message_id"] = message.message_id
 
-    # Owner query handling
     owner_reply = handle_owner_query(message)
     if owner_reply:
         bot.send_message(message.chat.id, owner_reply)
         return
 
-    # Language + nickname setup
     if user_data.get(user_id, {}).get("awaiting_lang_nick"):
         parts = text.split()
         if len(parts) >= 2:
             lang = parts[0]
             nickname = " ".join(parts[1:]).replace("@", "")
-            nickname = nickname[0].upper() + nickname[1:].lower() if len(nickname) > 1 else nickname.upper()
             user_data[user_id]["language"] = lang
             user_data[user_id]["nickname"] = nickname
             user_data[user_id]["awaiting_lang_nick"] = False
-            bot.send_message(message.chat.id, f"Alright {nickname}, I'll chat with you in {lang}. 😘", reply_to_message_id=message.message_id)
+            bot.send_message(message.chat.id, f"Alright {format_nickname(nickname)}, I'll chat with you in {lang}. 😘", reply_to_message_id=message.message_id)
         else:
-            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish JOHN")
+            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish OG")
         return
 
-    # Language mismatch reminder
     if language_mismatch(user_id, text):
         chosen_lang = user_data[user_id]["language"]
         bot.send_message(message.chat.id, f"You chose {chosen_lang} 😏 Please speak only in that language or tell me if you want to change.")
         return
 
-    # Abusive word handling
     if is_abusive(text):
         warned = user_data.get(user_id, {}).get("warned", False)
         if not warned:
@@ -252,47 +234,37 @@ def handle_all_messages(message):
         if user_data.get(user_id, {}).get("warned"):
             user_data[user_id]["warned"] = False
 
-    # Topic lock mode
     locked_topic = user_data.get(user_id, {}).get("topic")
     if locked_topic:
-        # If user sends stop/change topic
         if re.search(r"\b(stop|change topic|end topic|exit)\b", text.lower()):
             user_data[user_id].pop("topic", None)
             bot.send_message(message.chat.id, "Okay, topic unlocked. What now? 😏")
             return
         else:
-            # Reply in topic only, no other random talk
             ai_reply = generate_ai_response(text, user_id)
             bot.send_message(message.chat.id, ai_reply, reply_to_message_id=message.message_id)
             return
 
-    # Detect topic start phrases to lock topic
     if re.search(r"\b(let'?s talk about|let's play|baat kare|game khele|play game|talk about)\b", text.lower()):
         user_data[user_id]["topic"] = text
         bot.send_message(message.chat.id, f"Alright, we’re sticking to this topic: {text} 😉", reply_to_message_id=message.message_id)
         return
 
-    # Reply triggers
     triggers = ["miss og", "missog", "baby", f"@{bot.get_me().username.lower()}", "miss og bot"]
-
     is_triggered = any(t in text.lower() for t in triggers) or (message.reply_to_message and message.reply_to_message.from_user.username == bot.get_me().username)
 
     if is_triggered:
         ai_reply = generate_ai_response(text, user_id)
         bot.send_message(message.chat.id, ai_reply, reply_to_message_id=message.message_id)
     else:
+        mention = get_mention(message)
         if message.chat.type == "private":
-            nick = get_nickname(user_id)
-            bot.send_message(message.chat.id, f"{nick}, please tag me or say 'MISS OG' to chat 😘", reply_to_message_id=message.message_id)
+            bot.send_message(message.chat.id, f"{mention}, please tag me or say 'MISS OG' to chat 😘", reply_to_message_id=message.message_id)
         else:
-            # In groups, remind user to tag or say MISS OG, tagging with nickname
-            nick = get_nickname(user_id)
-            bot.send_message(message.chat.id, f"{nick}, please mention me or say 'MISS OG' to talk! 😘", reply_to_message_id=message.message_id)
+            bot.send_message(message.chat.id, f"{mention}, please mention me or say 'MISS OG' to talk! 😘", reply_to_message_id=message.message_id)
 
-# Background thread to check inactivity for tagging reminder
 threading.Thread(target=user_inactive_checker, daemon=True).start()
 
-# Flask app for webhook
 app = Flask(__name__)
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
