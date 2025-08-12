@@ -216,7 +216,7 @@ def handle_all_messages(message):
             user_data[user_id]["language_confirmed"] = False  # Reset confirmation on new language choice
             bot.send_message(message.chat.id, f"Alright {nickname}, I'll chat with you in {lang}. 😘", reply_to_message_id=message.message_id)
         else:
-            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish JOHN")
+            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish userxOG")
         return
 
     # Check if language confirmation is pending
