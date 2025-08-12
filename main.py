@@ -27,7 +27,10 @@ ABUSIVE_WORDS = {
     "сука", "блядь", "пидор", "puta", "mierda", "imbécil", "cabrón"
 }
 
-user_data = {}  # Stores: language, nickname (CAPS), warnings, topic lock, last_active, awaiting_lang_nick
+# Accepted short acknowledgements for language confirmation
+SHORT_ACKS = {"ok", "yes", "sure", "fine", "alright", "done", "got it", "roger"}
+
+user_data = {}  # Stores: language, nickname (CAPS), warnings, topic lock, last_active, awaiting_lang_nick, language_confirmed
 
 def is_abusive(text):
     t = text.lower()
@@ -38,9 +41,12 @@ def get_nickname(user_id):
     if name:
         return name.upper()
     # fallback to Telegram username if exists
-    user = bot.get_chat_member(user_id, user_id)
-    if hasattr(user, "user") and user.user.username:
-        return user.user.username.upper()
+    try:
+        user = bot.get_chat_member(user_id, user_id)
+        if hasattr(user, "user") and user.user.username:
+            return user.user.username.upper()
+    except Exception:
+        pass
     return "BABY"
 
 def handle_owner_query(message):
@@ -199,7 +205,7 @@ def handle_all_messages(message):
         return
 
     # Language + nickname setup
-    if user_data.get(user_id, {}).get("awaiting_lang_nick"):
+    if user_data[user_id].get("awaiting_lang_nick"):
         parts = text.split()
         if len(parts) >= 2:
             lang = parts[0]
@@ -207,15 +213,35 @@ def handle_all_messages(message):
             user_data[user_id]["language"] = lang
             user_data[user_id]["nickname"] = nickname
             user_data[user_id]["awaiting_lang_nick"] = False
+            user_data[user_id]["language_confirmed"] = False  # Reset confirmation on new language choice
             bot.send_message(message.chat.id, f"Alright {nickname}, I'll chat with you in {lang}. 😘", reply_to_message_id=message.message_id)
         else:
             bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish JOHN")
         return
 
+    # Check if language confirmation is pending
+    lang = user_data[user_id].get("language")
+    lang_confirmed = user_data[user_id].get("language_confirmed", False)
+    if lang and not lang_confirmed:
+        # If user reply is short acknowledgement in accepted list
+        if text.lower() in SHORT_ACKS:
+            user_data[user_id]["language_confirmed"] = True
+            bot.send_message(message.chat.id, f"Great! Let's continue in {lang} 😎", reply_to_message_id=message.message_id)
+            return
+        else:
+            # If message is meaningful, consider confirmed too
+            if len(text) > 3:
+                user_data[user_id]["language_confirmed"] = True
+                # Let it pass below for normal processing
+            else:
+                # Else remind politely
+                bot.send_message(message.chat.id, f"You chose {lang} 😏 Please speak only in that language or tell me if you want to change.", reply_to_message_id=message.message_id)
+                return
+
     # Language mismatch reminder
     if language_mismatch(user_id, text):
         chosen_lang = user_data[user_id]["language"]
-        bot.send_message(message.chat.id, f"You chose {chosen_lang} 😏 Please speak only in that language or tell me if you want to change.")
+        bot.send_message(message.chat.id, f"You chose {chosen_lang} 😏 Please speak only in that language or tell me if you want to change.", reply_to_message_id=message.message_id)
         return
 
     # Abusive word handling
