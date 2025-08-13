@@ -67,8 +67,9 @@ def save_nickname(message):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.InlineKeyboardMarkup()
+    bot_username = bot.get_me().username
     markup.add(
-        types.InlineKeyboardButton("➕ Add Me to Group", url="https://t.me/YourBotUsername?startgroup=true"),
+        types.InlineKeyboardButton("➕ Add Me to Group", url=f"https://t.me/{bot_username}?startgroup=true"),
         types.InlineKeyboardButton("📢 MissOG_News", url="https://t.me/MissOG_News"),
         types.InlineKeyboardButton("💬 Talk More", callback_data="talk_more"),
         types.InlineKeyboardButton("🎮 Game (Soon)", callback_data="game_soon")
@@ -94,9 +95,12 @@ def send_welcome(message):
 def callback_handler(call):
     user_id = call.from_user.id
     if call.data == "talk_more":
-        waiting_for_language[user_id] = True
-        bot.send_message(call.message.chat.id,
-                         "Which language would you like to talk in? And what should I call you? 🤔\nReply like this:\nEnglish OG")
+        if call.message.chat.type == "private":
+            waiting_for_language[user_id] = True
+            bot.send_message(call.message.chat.id,
+                             "Which language would you like to talk in? And what should I call you? 🤔\nReply like this:\nEnglish OG")
+        else:
+            bot.answer_callback_query(call.id, "Please use /language in private chat to set your language and nickname.")
     elif call.data == "game_soon":
         bot.answer_callback_query(call.id, "🎮 Game feature coming soon, stay tuned!")
     else:
@@ -110,9 +114,17 @@ def handle_message(message):
     lang = user_languages.get(user_id, "English")
     text = message.text.strip() if message.text else ""
 
-    # Skip meaningless confirmations from language flow
+    # Language change detection
+    prev_lang = user_languages.get(user_id)
+    if prev_lang and text.lower() not in ["ok", "okay", "sure", "haan", "haan ji"] and text.lower() != prev_lang.lower():
+        user_languages[user_id] = text
+        bot.send_message(message.chat.id,
+                         f"You chose {prev_lang} earlier, do you want to continue chatting in {text}? 😏")
+        return
+
+    # Skip meaningless confirmations
     if user_id in user_languages and re.fullmatch(r"(ok|okay|sure|haan|haan ji)", text, re.I):
-        bot.reply_to(message, f"Haan {mention}, chalo baat shuru karein 😏")
+        bot.reply_to(message, f"Haan {mention}, let's start chatting 😏")
         return
 
     # Topic lock check
@@ -177,7 +189,7 @@ def user_inactive_checker():
             last_message_id = data.get("last_message_id")
             topic = data.get("topic")
             if last_active and chat_id and last_message_id and topic:
-                if now - last_active > 120:  # 2 minutes inactivity
+                if now - last_active > 120:
                     remind_to_tag(user_id, chat_id, last_message_id)
                     user_data[user_id]["last_active"] = now + 180
         time.sleep(30)
