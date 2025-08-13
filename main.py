@@ -33,7 +33,7 @@ SPECIAL_USER_ID = 8457816680  # Set your Telegram numeric user id
 
 def is_abusive(text):
     t = text.lower()
-    return any(re.search(rf"\b{re.escape(w)}\b", t) for w in ABUSIVE_WORDS)
+    return any(w in t for w in ABUSIVE_WORDS)
 
 def format_nickname(nickname):
     if len(nickname) > 1:
@@ -49,7 +49,9 @@ def get_user_display_name(message):
 
 def get_username_or_display(message):
     username = message.from_user.username
-    return "@" + username if username else get_user_display_name(message)
+    if username:
+        return "@" + username
+    return get_user_display_name(message)
 
 def get_nickname(user_id):
     data = user_data.get(user_id, {})
@@ -58,15 +60,19 @@ def get_nickname(user_id):
 
 def get_mention(message):
     user_id = message.from_user.id
-    if SPECIAL_USER_ID and user_id == SPECIAL_USER_ID:
+    if SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID:
         return "baby"
     nickname = get_nickname(user_id)
-    return nickname if nickname else get_username_or_display(message)
+    if nickname:
+        return nickname
+    return get_username_or_display(message)
 
 def handle_owner_query(message):
     text = message.text.lower()
-    triggers = ["owner", "creator", "who made you", "kisne banaya", "malik", "creator kaun",
-                "baby", "hubby", "husband", "jaanu", "patidev", "bf", "boyfriend", "partner", "bae"]
+    triggers = [
+        "owner", "creator", "who made you", "kisne banaya", "malik", "creator kaun",
+        "baby", "hubby", "husband", "jaanu", "patidev", "bf", "boyfriend", "partner", "bae"
+    ]
     if any(t in text for t in triggers) or OWNER_USERNAME.lower() in text:
         if message.from_user.username and message.from_user.username.lower() == OWNER_USERNAME.lower():
             return "You ❤️"
@@ -92,11 +98,11 @@ def language_mismatch(user_id, text):
     return False
 
 def generate_ai_response(prompt, user_id):
-    mention = "baby" if (SPECIAL_USER_ID and user_id == SPECIAL_USER_ID) else get_nickname(user_id) or "User"
+    mention = "baby" if (SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID) else get_nickname(user_id) or "User"
     system_prompt = (
         f"You are Miss OG, a loving but slightly savage AI assistant with desi swag. "
         f"Address the user as {mention}. Use emojis and expressive, slightly aggressive language. "
-        f"Keep answers short and sweet. Always end with a friendly question."
+        f"Keep answers short and sweet. Always end with a friendly question to keep the conversation going."
     )
     try:
         completion = openai.ChatCompletion.create(
@@ -124,24 +130,22 @@ def send_welcome(chat_id, is_group=False):
         types.InlineKeyboardButton("🎮 Game (Soon)", callback_data="game_soon"),
     )
     intro = (
-        "✨️ Hello Group!\n" if is_group else "👋 Hey! Welcome to Miss OG Bot!\n"
-    )
-    intro += (
-        "I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
+        "✨️ Hello! I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
         "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
         "Click below to add me to more groups, get the latest news, chat more, or explore games. \n"
     )
     bot.send_message(chat_id, intro, reply_markup=markup)
 
 def remind_to_tag(user_id, chat_id, last_message_id):
-    mention = get_mention(user_id)
+    mention = get_mention(user_data.get(user_id, {}))
     messages = [
         f"{mention}, tag me or say 'MISS OG' to talk! 😘",
         f"Hey {mention}, don't forget to mention me or say 'MISS OG'! 😉",
         f"{mention}, you gotta tag me or call me 'MISS OG' to keep chatting! 😏",
         f"{mention}, tag me please or say 'MISS OG' so I know you're talking to me! 😘"
     ]
-    bot.send_message(chat_id, random.choice(messages), reply_to_message_id=last_message_id)
+    msg = random.choice(messages)
+    bot.send_message(chat_id, msg, reply_to_message_id=last_message_id)
 
 def user_inactive_checker():
     while True:
@@ -150,11 +154,20 @@ def user_inactive_checker():
             last_active = data.get("last_active")
             chat_id = data.get("chat_id")
             last_message_id = data.get("last_message_id")
-            if last_active and chat_id and last_message_id:
+            topic = data.get("topic")
+            if last_active and chat_id and last_message_id and topic:
                 if now - last_active > 120:
                     remind_to_tag(user_id, chat_id, last_message_id)
                     user_data[user_id]["last_active"] = now + 180
         time.sleep(30)
+
+# Commands
+@bot.message_handler(commands=["start", "help"])
+def handle_start(message):
+    if message.chat.type == "private":
+        send_welcome(message.chat.id, is_group=False)
+    else:
+        send_welcome(message.chat.id, is_group=True)
 
 @bot.message_handler(commands=["about"])
 def handle_about(message):
@@ -173,9 +186,11 @@ def handle_about(message):
 def callback_handler(call):
     user_id = call.from_user.id
     if call.data == "talk_more":
-        suggested_name = call.from_user.username or "YOURNAME"
+        username = call.from_user.username or "YOURNAME"
+        suggested_name = username
         msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {suggested_name}"
-        user_data.setdefault(user_id, {})["awaiting_lang_nick"] = True
+        user_data[user_id] = user_data.get(user_id, {})
+        user_data[user_id]["awaiting_lang_nick"] = True
         bot.send_message(call.message.chat.id, msg)
     elif call.data == "game_soon":
         bot.answer_callback_query(call.id, "🎮 Game feature coming soon, stay tuned!")
@@ -187,7 +202,7 @@ def handle_all_messages(message):
     user_id = message.from_user.id
     text = message.text.strip() if message.text else ""
 
-    # Update last_active and chat info
+    # Update last_active
     user_data.setdefault(user_id, {})
     user_data[user_id]["last_active"] = time.time()
     user_data[user_id]["chat_id"] = message.chat.id
@@ -205,7 +220,7 @@ def handle_all_messages(message):
         if len(parts) >= 2:
             lang = parts[0]
             nickname = " ".join(parts[1:]).replace("@", "")
-            user_data[user_id]["language"] = lang.lower()
+            user_data[user_id]["language"] = lang
             user_data[user_id]["nickname"] = nickname
             user_data[user_id]["awaiting_lang_nick"] = False
             bot.send_message(message.chat.id, f"Alright {format_nickname(nickname)}, I'll chat with you in {lang} 😘", reply_to_message_id=message.message_id)
@@ -213,18 +228,29 @@ def handle_all_messages(message):
             bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish OG")
         return
 
-    # Abusive word
+    # Language mismatch
+    if language_mismatch(user_id, text):
+        replies = [
+            f"Arre baby 😇, koi tension nahi! Language mismatch ho gaya tha. Batao, ab hum English me baat kare ya Hinglish me continue kare? ✨💖",
+            f"Oops! 😅 Baby, galti ho gayi, koi baat nahi. Kaunsi language choose karni hai ab? English ya Hinglish? 😏💫",
+            f"Haha baby 🙈, koi problem nahi! Language thodi confuse ho gayi thi. Batao, kaunsi style me baat karein? 😘✨"
+        ]
+        bot.send_message(message.chat.id, random.choice(replies), reply_to_message_id=message.message_id)
+        return
+
+    # Abusive words
     if is_abusive(text):
-        if not user_data[user_id].get("warned"):
+        warned = user_data.get(user_id, {}).get("warned", False)
+        if not warned:
             bot.send_message(message.chat.id, "Hey! Don't use bad words! 😠 Do it again and I won't talk to you.")
             user_data[user_id]["warned"] = True
         return
     else:
-        if user_data[user_id].get("warned"):
+        if user_data.get(user_id, {}).get("warned"):
             user_data[user_id]["warned"] = False
 
     # Topic lock
-    locked_topic = user_data[user_id].get("topic")
+    locked_topic = user_data.get(user_id, {}).get("topic")
     if locked_topic:
         if re.search(r"\b(stop|change topic|end topic|exit)\b", text.lower()):
             user_data[user_id].pop("topic", None)
@@ -240,7 +266,6 @@ def handle_all_messages(message):
         bot.send_message(message.chat.id, f"Alright, we’re sticking to this topic: {text} 😉", reply_to_message_id=message.message_id)
         return
 
-    # Triggered chat
     triggers = ["miss og", "missog", "baby", f"@{bot.get_me().username.lower()}", "miss og bot"]
     is_triggered = any(t in text.lower() for t in triggers) or (message.reply_to_message and message.reply_to_message.from_user.username == bot.get_me().username)
 
@@ -251,10 +276,10 @@ def handle_all_messages(message):
         mention = get_mention(message)
         bot.send_message(message.chat.id, f"{mention}, please tag me or say 'MISS OG' to chat 😘", reply_to_message_id=message.message_id)
 
-# Background thread for inactivity
+# Background inactivity checker
 threading.Thread(target=user_inactive_checker, daemon=True).start()
 
-# Flask app
+# Flask app for webhook
 app = Flask(__name__)
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
