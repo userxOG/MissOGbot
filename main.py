@@ -69,13 +69,25 @@ def send_welcome(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton("➕ Add Me to Group", url="https://t.me/YourBotUsername?startgroup=true"),
-        types.InlineKeyboardButton("📢 News", url="https://t.me/MissOG_News"),
+        types.InlineKeyboardButton("📢 MissOG_News", url="https://t.me/MissOG_News"),
         types.InlineKeyboardButton("💬 Talk More", callback_data="talk_more"),
         types.InlineKeyboardButton("🎮 Game (Soon)", callback_data="game_soon")
     )
-    bot.send_message(message.chat.id,
-                     "✨ Hello!\nI’m Miss OG — your loving, cheeky AI companion 😏",
-                     reply_markup=markup)
+    if message.chat.type == "private":
+        intro = (
+            "👋 Hey! Welcome to Miss OG Bot!\n"
+            "I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
+            "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
+            "Click below to add me to more groups, get the latest news, chat more, or explore games.\n"
+        )
+    else:
+        intro = (
+            "✨️ Hello Group!\n"
+            "I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
+            "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
+            "Click below to add me to more groups, get the latest news, chat more, or explore games. \n"
+        )
+    bot.send_message(message.chat.id, intro, reply_markup=markup)
 
 # -------------------- Callback handler --------------------
 @bot.callback_query_handler(func=lambda call: True)
@@ -110,7 +122,6 @@ def handle_message(message):
             user_data[user_id].pop("topic", None)
             bot.send_message(message.chat.id, "Okay, topic unlocked. What now? 😏")
         else:
-            # Generate AI response
             try:
                 completion = openai.ChatCompletion.create(
                     model="gpt-4o-mini",
