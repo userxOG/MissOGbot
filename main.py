@@ -77,7 +77,7 @@ def handle_owner_query(message):
 
 def language_mismatch(user_id, text):
     # Ignore short acknowledgments
-    if text.lower() in ["ok", "sure", "thanks", "thank you"]:
+    if text.lower() in ["ok", "sure", "thanks", "thank you", "yes", "no"]:
         return False
     chosen_lang = user_data.get(user_id, {}).get("language")
     if not chosen_lang:
@@ -253,14 +253,13 @@ def handle_all_messages(message):
         mention = get_mention(message)
         bot.send_message(message.chat.id, f"{mention}, please tag me or say 'MISS OG' to chat 😘", reply_to_message_id=message.message_id)
 
-# --- Background thread for inactivity ---
+# --- Inactivity checker thread ---
+
 def remind_to_tag(user_id, chat_id, last_message_id):
     mention = "baby" if (SPECIAL_USER_ID is not None and user_id == SPECIAL_USER_ID) else get_nickname(user_id) or "User"
     messages = [
         f"{mention}, tag me or say 'MISS OG' to talk! 😘",
         f"Hey {mention}, don't forget to mention me or say 'MISS OG'! 😉",
-        f"{mention}, you gotta tag me or call me 'MISS OG' to keep chatting! 😏",
-        f"{mention}, tag me please or say 'MISS OG' so I know you're talking to me! 😘"
     ]
     msg = random.choice(messages)
     bot.send_message(chat_id, msg, reply_to_message_id=last_message_id)
@@ -272,16 +271,16 @@ def user_inactive_checker():
             last_active = data.get("last_active")
             chat_id = data.get("chat_id")
             last_message_id = data.get("last_message_id")
-            topic = data.get("topic")
-            if last_active and chat_id and last_message_id and topic:
-                if now - last_active > 120:  # 2 minutes inactivity
+            if last_active and chat_id and last_message_id:
+                if now - last_active > 120:
                     remind_to_tag(user_id, chat_id, last_message_id)
-                    user_data[user_id]["last_active"] = now + 180  # wait 3 mins more
+                    user_data[user_id]["last_active"] = now + 180
         time.sleep(30)
 
 threading.Thread(target=user_inactive_checker, daemon=True).start()
 
 # --- Flask webhook ---
+
 app = Flask(__name__)
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
