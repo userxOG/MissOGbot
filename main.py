@@ -156,18 +156,18 @@ def user_inactive_checker():
                     user_data[user_id]["last_active"] = now + 180
         time.sleep(30)
 
-@bot.message_handler(commands=["start", "help"])
-def handle_start(message):
-    send_welcome(message.chat.id, is_group=(message.chat.type != "private"))
-
 @bot.message_handler(commands=["about"])
 def handle_about(message):
     about_text = (
         "✨️ Hello! I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
         "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
-        "Click below to add me to more groups, get the latest news, chat more, or explore games."
+        "📢 **News channel:** [MissOG_News](https://t.me/MissOG_News)\n"
+        "➕ **Add me to your group:** [Add Me](https://t.me/MissOGbot?startgroup=true)\n\n"
+        "I’m loving, slightly savage, and always ready to chat, play games 🎮, or give advice! 💁‍♀️✨\n"
+        "Tell me your mood today! 😊\n"
+        "If you need anything else, **tag me** and I’ll send you the commands! 😏"
     )
-    bot.send_message(message.chat.id, about_text)
+    bot.send_message(message.chat.id, about_text, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
