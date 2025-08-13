@@ -217,7 +217,7 @@ def handle_all_messages(message):
         bot.send_message(message.chat.id, owner_reply)
         return
 
-    # Language + nickname setup
+    # Language + nickname setup (private + group)
     if user_data.get(user_id, {}).get("awaiting_lang_nick"):
         parts = text.split()
         if len(parts) >= 2:
@@ -231,9 +231,8 @@ def handle_all_messages(message):
             bot.send_message(message.chat.id, "Please provide both language and nickname, e.g.,\nEnglish OG")
         return
 
-    # Language mismatch reminder (updated, expressive + OG swag)
+    # Language mismatch reminder (private + group)
     if language_mismatch(user_id, text):
-        chosen_lang = user_data[user_id]["language"]
         replies = [
             f"Arre baby 😇, koi tension nahi! Language mismatch ho gaya tha. Batao, ab hum English me baat kare ya Hinglish me continue kare? ✨💖",
             f"Oops! 😅 Baby, galti ho gayi, koi baat nahi. Kaunsi language choose karni hai ab? English ya Hinglish? 😏💫",
