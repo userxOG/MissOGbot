@@ -1,484 +1,456 @@
-import telebot
-import openai
+# main.py
 import os
-from flask import Flask, request
-from dotenv import load_dotenv
-from telebot import types
-import threading
 import time
 import random
+from flask import Flask, request
+import telebot
+from telebot import types
+from dotenv import load_dotenv
 
-# ================== ENV & BOT ==================
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+if not BOT_TOKEN:
+    raise RuntimeError("Set TELEGRAM_BOT_TOKEN in env")
 
-bot = telebot.TeleBot(BOT_TOKEN)
-openai.api_key = OPENAI_KEY
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 
-SPECIAL_USER_ID = 8457816680
+# --- Config / state ---
+BOT_NAME = "Miss OG"
 OWNER_USERNAME = "userxOG"
+SPECIAL_USER_ID = None  # set numeric id if you want special mention behavior
 
-# ================== STATE ==================
-user_data = {}      # profiles, nickname/lang, etc.
-ttt_games = {}      # per-chat game/lobby state
+# Keep per-message TicTacToe state keyed by (chat_id, message_id)
+ttt_games = {}  # { (chat_id, message_id): { board: [' ']*9, mode: 'vs_bot'|'vs_players', turn: 'X'|'O', players: { 'X': user_id, 'O': user_id or None }, starter_id: user_id } }
 
-# ================== UTILS ==================
-ABUSIVE_WORDS = {
-    "randi","madrchd","bhosdike","lund","chutiya","bitch","asshole","mf","bc","mc","bkl",
-    "fuck","shit","slut","idiot","harami","kutte","kamine"
-}
+# --- Utilities ---
+def get_display_name_from_user(user):
+    if user.username:
+        return "@" + user.username
+    name = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
+    return name.strip() or "User"
 
-def is_abusive(text):
-    t = (text or "").lower()
-    return any(w in t for w in ABUSIVE_WORDS)
+def make_ttt_markup(board):
+    """Return InlineKeyboardMarkup for current board"""
+    markup = types.InlineKeyboardMarkup()
+    buttons = []
+    for i in range(9):
+        symbol = board[i]
+        label = symbol if symbol != " " else " "
+        # Use callback data 'ttt_move:{i}'
+        buttons.append(types.InlineKeyboardButton(label, callback_data=f"ttt_move:{i}"))
+    # add rows
+    for r in range(0,9,3):
+        markup.row(buttons[r], buttons[r+1], buttons[r+2])
+    return markup
 
-def format_nickname(nickname):
-    if not nickname: return "User"
-    return nickname[0].upper()+nickname[1:].lower() if len(nickname)>1 else nickname.upper()
+def render_board_text(board):
+    # Use emojis for display
+    def e(c):
+        if c == "X": return "❌"
+        if c == "O": return "⭕"
+        return "▫️"
+    return f"{e(board[0])}{e(board[1])}{e(board[2])}\n{e(board[3])}{e(board[4])}{e(board[5])}\n{e(board[6])}{e(board[7])}{e(board[8])}"
 
-def get_username_or_display(message):
-    if message.from_user.username:
-        return "@"+message.from_user.username
-    first = message.from_user.first_name or ""
-    last = message.from_user.last_name or ""
-    full = (first+" "+last).strip()
-    return full or "User"
+WIN_COMBOS = [
+    (0,1,2),(3,4,5),(6,7,8),
+    (0,3,6),(1,4,7),(2,5,8),
+    (0,4,8),(2,4,6)
+]
 
-def get_mention(message):
-    uid = message.from_user.id
-    if SPECIAL_USER_ID and uid == SPECIAL_USER_ID:
-        return "baby"
-    nick = user_data.get(uid, {}).get("nickname")
-    return format_nickname(nick) if nick else get_username_or_display(message)
+def check_winner(board):
+    """Return 'X' or 'O' if winner, 'Draw' if full and no winner, else None"""
+    for a,b,c in WIN_COMBOS:
+        if board[a] != " " and board[a] == board[b] == board[c]:
+            return board[a]
+    if all(cell != " " for cell in board):
+        return "Draw"
+    return None
 
-# ================== AI ==================
-def generate_ai_response(prompt, user_id):
-    mention = "baby" if (SPECIAL_USER_ID and user_id==SPECIAL_USER_ID) else (user_data.get(user_id,{}).get("nickname") or "User")
-    system_prompt = (
-        f"You are Miss OG, a loving but slightly savage AI assistant with desi swag. "
-        f"Address the user as {format_nickname(mention)}. Use emojis and expressive, slightly aggressive language. "
-        f"Keep answers short and sweet. Always end with a friendly question."
+def start_ttt_game(chat_id, as_message_id, mode, starter_user):
+    """Create initial ttt game and send board message (returns message)"""
+    board = [" "] * 9
+    players = {'X': starter_user.id if starter_user else None, 'O': None}
+    game = {
+        "board": board,
+        "mode": mode,                # 'vs_bot' or 'vs_players'
+        "turn": "X",                 # X always starts
+        "players": players,
+        "starter_id": starter_user.id if starter_user else None,
+        "message_id": None,          # will set after sending
+        "chat_id": chat_id
+    }
+    # initial board message
+    text = f"TicTacToe — {'You vs Miss OG' if mode=='vs_bot' else 'Player vs Player (first click = X)'}\n\n{render_board_text(board)}\n\nTurn: ❌ (X)"
+    markup = make_ttt_markup(board)
+    sent = bot.send_message(chat_id, text, reply_markup=markup)
+    game["message_id"] = sent.message_id
+    ttt_games[(chat_id, sent.message_id)] = game
+    return sent
+
+def end_game_update(chat_id, message_id, result_text):
+    """Edit message to show final board + result + action buttons."""
+    key = (chat_id, message_id)
+    game = ttt_games.get(key)
+    if not game:
+        return
+    board = game["board"]
+    text = f"TicTacToe — Result\n\n{render_board_text(board)}\n\n{result_text}"
+    # Play Again and Menu buttons
+    buttons = types.InlineKeyboardMarkup(row_width=2)
+    buttons.add(
+        types.InlineKeyboardButton("🔁 Play Again", callback_data=f"ttt_playagain:{message_id}"),
+        types.InlineKeyboardButton("📋 Menu", callback_data=f"ttt_menu:{message_id}")
     )
-    try:
-        completion = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"system","content":system_prompt},{"role":"user","content":prompt}],
-            max_tokens=150,
-            temperature=0.9
-        )
-        return completion.choices[0].message.content.strip()
-    except Exception as e:
-        print("OpenAI Error:", e)
-        return "Oops! Technical issue 😓"
+    bot.edit_message_text(text, chat_id, message_id, reply_markup=buttons)
 
-# ================== MENUS ==================
-def build_welcome_keyboard():
-    bot_username = bot.get_me().username
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    # Row 1
-    kb.add(
+def reset_game_same_players(chat_id, message_id):
+    key = (chat_id, message_id)
+    game = ttt_games.get(key)
+    if not game:
+        return
+    game["board"] = [" "] * 9
+    game["turn"] = "X"
+    # For vs_players we keep players; for vs_bot keep same starter
+    text = f"TicTacToe — Restarted\n\n{render_board_text(game['board'])}\n\nTurn: ❌ (X)"
+    markup = make_ttt_markup(game["board"])
+    bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+
+# --- Welcome & game menu ---
+def send_welcome(chat_id, is_group=False):
+    bot_user = bot.get_me()
+    bot_username = bot_user.username if bot_user else "MissOGbot"
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    # row 1
+    markup.add(
         types.InlineKeyboardButton("➕ Add Me to Group", url=f"https://t.me/{bot_username}?startgroup=true"),
         types.InlineKeyboardButton("📢 MissOG_News", url="https://t.me/MissOG_News")
     )
-    # Row 2
-    kb.add(
-        types.InlineKeyboardButton("💬 Talk More", callback_data="talk_more"),
-        types.InlineKeyboardButton("🎮 Game", callback_data="game_menu")
-    )
-    return kb
-
-def build_game_menu_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton("🎮 Word Guessing", callback_data="game_word"),
-        types.InlineKeyboardButton("🎮 TicTacToe", callback_data="game_ttt"),
-        types.InlineKeyboardButton("🎮 RPC", callback_data="game_rpc"),
-        types.InlineKeyboardButton("🎮 Quick Math", callback_data="game_math"),
-    )
-    # Row 3: Back
-    kb.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_welcome"))
-    return kb
-
-def send_welcome(chat_id):
+    # row 2
+    markup.add(types.InlineKeyboardButton("💬 Talk More", callback_data="talk_more"))
+    # row 3: Game button (single)
+    markup.add(types.InlineKeyboardButton("🎮 Game", callback_data="game_menu"))
     intro = (
         "✨️ Hello! I’m Miss OG — your elegant, loving & cheeky AI companion made with love by @userxOG ❤️\n"
         "Here to upgrade your chats with style, fun, and just the right amount of sass.\n\n"
         "Click below to add me to more groups, get the latest news, chat more, or explore games."
     )
-    bot.send_message(chat_id, intro, reply_markup=build_welcome_keyboard())
+    bot.send_message(chat_id, intro, reply_markup=markup)
 
-# ================== TTT HELPERS ==================
-EMPT = "⬜"
-XEMO = "❌"
-O_EMO = "⭕"
-
-def ttt_new_board():
-    return [" "]*9
-
-def ttt_cell_display(v):
-    if v == "X": return XEMO
-    if v == "O": return O_EMO
-    return EMPT
-
-def ttt_render_keyboard(board, game_id_prefix="ttt_m_"):
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    for r in range(3):
-        row_btns = []
-        for c in range(3):
-            i = r*3 + c
-            row_btns.append(
-                types.InlineKeyboardButton(ttt_cell_display(board[i]), callback_data=f"{game_id_prefix}{i}")
-            )
-        kb.row(*row_btns)
-    return kb
-
-def ttt_check_winner(b):
-    lines = [
-        (0,1,2),(3,4,5),(6,7,8),
-        (0,3,6),(1,4,7),(2,5,8),
-        (0,4,8),(2,4,6)
-    ]
-    for a,b2,c in lines:
-        if b[a]!=" " and b[a]==b2==b[c]:
-            return b[a]
-    if " " not in b:
-        return "draw"
-    return None
-
-def ttt_bot_move(board):
-    choices = [i for i,v in enumerate(board) if v==" "]
-    if not choices: return None
-    return random.choice(choices)
-
-def ttt_reset_chat(chat_id):
-    g = ttt_games.pop(chat_id, None)
-    if not g: return
-    # stop timers if exist
-    for tname in ("lobby_timer","start_timer"):
-        t = g.get(tname)
-        if t:
-            try: t.cancel()
-            except: pass
-
-# ================== CALLBACKS ==================
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    chat_id = call.message.chat.id
-    uid = call.from_user.id
-
-    # TALK MORE
-    if call.data == "talk_more":
-        username = call.from_user.username or "YOURNAME"
-        msg = f"Which language would you like to talk in? And what should I call you? 🤔\n\nReply like this:\nEnglish {username}"
-        user_data[uid] = user_data.get(uid, {})
-        user_data[uid]["awaiting_lang_nick"] = True
-        bot.send_message(chat_id, msg)
-        bot.answer_callback_query(call.id)
-        return
-
-    # GAME MENU
-    if call.data == "game_menu":
-        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=build_game_menu_keyboard())
-        bot.answer_callback_query(call.id)
-        return
-
-    # BACK
-    if call.data == "back_to_welcome":
-        try:
-            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=build_welcome_keyboard())
-        except:
-            bot.edit_message_text("Back to main menu ↓", chat_id=chat_id, message_id=call.message.message_id, reply_markup=build_welcome_keyboard())
-        bot.answer_callback_query(call.id)
-        return
-
-    # PLACEHOLDERS
-    if call.data in ["game_word","game_rpc","game_math"]:
-        bot.answer_callback_query(call.id, "Coming soon 😉")
-        return
-
-    # ================== TTT ENTRY ==================
-    if call.data == "game_ttt":
-        # PRIVATE: instant Miss OG vs You (no option)
-        if call.message.chat.type == "private":
-            ttt_reset_chat(chat_id)
-            board = ttt_new_board()
-            msg = None
-            try:
-                msg = bot.edit_message_text("TicTacToe — You "+XEMO+" vs Miss OG "+O_EMO+"\nYour turn!", chat_id=chat_id, message_id=call.message.message_id, reply_markup=ttt_render_keyboard(board))
-            except:
-                msg = bot.send_message(chat_id, "TicTacToe — You "+XEMO+" vs Miss OG "+O_EMO+"\nYour turn!", reply_markup=ttt_render_keyboard(board))
-            ttt_games[chat_id] = {
-                "mode":"pvb", "status":"active", "board":board,
-                "pX": uid, "pO": "bot", "turn":"X", "msg_id": msg.message_id
-            }
-            bot.answer_callback_query(call.id)
-            return
-        # GROUP: show two options
-        else:
-            kb = types.InlineKeyboardMarkup(row_width=2)
-            kb.add(
-                types.InlineKeyboardButton("🤖 VS Miss OG", callback_data="ttt_vs_bot"),
-                types.InlineKeyboardButton("👥 VS Others", callback_data="ttt_vs_others")
-            )
-            kb.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_welcome"))
-            bot.edit_message_text("Choose mode for TicTacToe:", chat_id=chat_id, message_id=call.message.message_id, reply_markup=kb)
-            bot.answer_callback_query(call.id)
-            return
-
-    # GROUP: VS MISS OG (bot opponent in group)
-    if call.data == "ttt_vs_bot":
-        if call.message.chat.type == "private":
-            bot.answer_callback_query(call.id)
-            return
-        ttt_reset_chat(chat_id)
-        board = ttt_new_board()
-        msg = bot.edit_message_text(
-            "TicTacToe — You "+XEMO+" vs Miss OG "+O_EMO+"\nYour turn!",
-            chat_id=chat_id, message_id=call.message.message_id, reply_markup=ttt_render_keyboard(board)
-        )
-        ttt_games[chat_id] = {
-            "mode":"pvb","status":"active","board":board,
-            "pX": uid,"pO":"bot","turn":"X","msg_id": msg.message_id
-        }
-        bot.answer_callback_query(call.id, "Game started vs Miss OG 🤖")
-        return
-
-    # GROUP: VS OTHERS (lobby + join)
-    if call.data == "ttt_vs_others":
-        if call.message.chat.type == "private":
-            bot.answer_callback_query(call.id)
-            return
-        if chat_id in ttt_games and ttt_games[chat_id].get("status") in ["lobby","active"]:
-            bot.answer_callback_query(call.id, "A TTT lobby/game is already running.")
-            return
-        ttt_reset_chat(chat_id)
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(types.InlineKeyboardButton("✅ Join", callback_data="ttt_join"))
-        kb.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_welcome"))
-        msg = bot.edit_message_text("🕹️ TicTacToe Lobby\nPlayer matching… 10s", chat_id=chat_id, message_id=call.message.message_id, reply_markup=kb)
-        ttt_games[chat_id] = {
-            "mode":"pvp","status":"lobby","player1":uid,"player2":None,
-            "lobby_msg_id": msg.message_id,"lobby_expires_at": time.time()+10,
-            "lobby_timer": None,"start_timer": None
-        }
-        # countdown
-        def lobby_countdown():
-            while True:
-                g = ttt_games.get(chat_id)
-                if not g or g.get("status")!="lobby": break
-                rem = int(g["lobby_expires_at"] - time.time())
-                if rem <= 0:
-                    try:
-                        bot.edit_message_text(
-                            "⏳ Lobby timed out. No one joined.\nOpen game menu again to host.",
-                            chat_id=chat_id, message_id=g["lobby_msg_id"], reply_markup=build_game_menu_keyboard()
-                        )
-                    except: pass
-                    ttt_reset_chat(chat_id)
-                    break
-                try:
-                    kb2 = types.InlineKeyboardMarkup(row_width=1)
-                    kb2.add(types.InlineKeyboardButton("✅ Join", callback_data="ttt_join"))
-                    kb2.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_welcome"))
-                    bot.edit_message_text(f"🕹️ TicTacToe Lobby\nPlayer matching… {rem}s", chat_id=chat_id, message_id=g["lobby_msg_id"], reply_markup=kb2)
-                except: pass
-                time.sleep(1)
-        t = threading.Thread(target=lobby_countdown, daemon=True)
-        t.start()
-        ttt_games[chat_id]["lobby_timer"] = t
-        bot.answer_callback_query(call.id, "Lobby opened!")
-        return
-
-    # GROUP: JOIN
-    if call.data == "ttt_join":
-        g = ttt_games.get(chat_id)
-        if not g or g.get("status")!="lobby":
-            bot.answer_callback_query(call.id, "No active lobby.")
-            return
-        if uid == g["player1"]:
-            bot.answer_callback_query(call.id, "You are Player 1 already.")
-            return
-        if g.get("player2"):
-            bot.answer_callback_query(call.id, "Lobby full.")
-            return
-        g["player2"] = uid
-        g["status"] = "starting"
-
-        p1u = g["player1"]
-        try:
-            p1 = bot.get_chat_member(chat_id, p1u).user
-            p1name = "@"+p1.username if p1.username else (p1.first_name or "Player1")
-        except:
-            p1name = "Player1"
-        p2 = call.from_user
-        p2name = "@"+p2.username if p2.username else (p2.first_name or "Player2")
-
-        def start_in_3():
-            try:
-                for s in [3,2,1]:
-                    bot.edit_message_text(
-                        f"Match found! {p1name} {XEMO} vs {p2name} {O_EMO}\nGame starts in {s}s…",
-                        chat_id=chat_id, message_id=g["lobby_msg_id"]
-                    )
-                    time.sleep(1)
-            except: pass
-            board = ttt_new_board()
-            ttt_games[chat_id] = {
-                "mode":"pvp","status":"active","board":board,
-                "pX": g["player1"],"pO": g["player2"],
-                "turn":"X","msg_id": g["lobby_msg_id"]
-            }
-            try:
-                bot.edit_message_text(
-                    f"TicTacToe — {p1name} {XEMO} vs {p2name} {O_EMO}\nTurn: {XEMO}",
-                    chat_id=chat_id, message_id=ttt_games[chat_id]["msg_id"], reply_markup=ttt_render_keyboard(board)
-                )
-            except: pass
-
-        t = threading.Thread(target=start_in_3, daemon=True)
-        t.start()
-        ttt_games[chat_id]["start_timer"] = t
-        bot.answer_callback_query(call.id, "Joined! 🎮")
-        return
-
-    # ================== TTT MOVES ==================
-    if call.data.startswith("ttt_m_"):
-        g = ttt_games.get(chat_id)
-        if not g or g.get("status")!="active" or "board" not in g:
-            bot.answer_callback_query(call.id, "No active game.")
-            return
-
-        idx = int(call.data.split("_")[-1])
-        if idx < 0 or idx > 8:
-            bot.answer_callback_query(call.id, "Invalid cell.")
-            return
-        board = g["board"]
-        if board[idx] != " ":
-            bot.answer_callback_query(call.id, "Cell already taken!")
-            return
-
-        # PVP
-        if g["mode"]=="pvp":
-            symbol = g["turn"]
-            cur_uid = g["pX"] if symbol=="X" else g["pO"]
-            if uid != cur_uid:
-                bot.answer_callback_query(call.id, "Not your turn.")
-                return
-            board[idx] = symbol
-            winner = ttt_check_winner(board)
-            if winner:
-                if winner=="draw":
-                    end_text = "Game over: Draw 🤝"
-                else:
-                    win_emo = XEMO if winner=="X" else O_EMO
-                    end_text = f"Game over: {win_emo} wins! 🏆"
-                kb = ttt_render_keyboard(board, game_id_prefix="noop_")
-                bot.edit_message_text(end_text, chat_id=chat_id, message_id=g["msg_id"], reply_markup=kb)
-                ttt_reset_chat(chat_id)
-                bot.answer_callback_query(call.id)
-                return
-            # switch turn
-            g["turn"] = "O" if g["turn"]=="X" else "X"
-            turn_text = XEMO if g["turn"]=="X" else O_EMO
-            bot.edit_message_text(
-                f"TicTacToe — Turn: {turn_text}",
-                chat_id=chat_id, message_id=g["msg_id"], reply_markup=ttt_render_keyboard(board)
-            )
-            bot.answer_callback_query(call.id)
-            return
-
-        # PVB (Miss OG)
-        if g["mode"]=="pvb":
-            # player is X
-            if g["turn"]!="X":
-                bot.answer_callback_query(call.id, "Wait, my turn 😏")
-                return
-            board[idx] = "X"
-            winner = ttt_check_winner(board)
-            if winner:
-                if winner=="draw":
-                    end_text = "Game over: Draw 🤝"
-                else:
-                    end_text = "You win! 🏆 " + XEMO
-                kb = ttt_render_keyboard(board, game_id_prefix="noop_")
-                bot.edit_message_text(end_text, chat_id=chat_id, message_id=g["msg_id"], reply_markup=kb)
-                ttt_reset_chat(chat_id)
-                bot.answer_callback_query(call.id)
-                return
-            # bot move
-            g["turn"] = "O"
-            mv = ttt_bot_move(board)
-            if mv is not None:
-                board[mv] = "O"
-            winner = ttt_check_winner(board)
-            if winner:
-                if winner=="draw":
-                    end_text = "Game over: Draw 🤝"
-                else:
-                    end_text = "Miss OG wins! 😎 " + O_EMO
-                kb = ttt_render_keyboard(board, game_id_prefix="noop_")
-                bot.edit_message_text(end_text, chat_id=chat_id, message_id=g["msg_id"], reply_markup=kb)
-                ttt_reset_chat(chat_id)
-                bot.answer_callback_query(call.id)
-                return
-            # back to player
-            g["turn"] = "X"
-            bot.edit_message_text("Your turn!", chat_id=chat_id, message_id=g["msg_id"], reply_markup=ttt_render_keyboard(board))
-            bot.answer_callback_query(call.id)
-            return
-
-    # NOOP taps after game end
-    if call.data.startswith("noop_"):
-        bot.answer_callback_query(call.id, "Game finished.")
-        return
-
-# ================== COMMANDS ==================
 @bot.message_handler(commands=["start","help"])
-def handle_start(message):
-    send_welcome(message.chat.id)
+def cmd_start(message):
+    send_welcome(message.chat.id, is_group=(message.chat.type != "private"))
 
-# ================== MESSAGES ==================
-@bot.message_handler(func=lambda m: True)
-def handle_all_messages(message):
-    uid = message.from_user.id
-    text = (message.text or "").strip()
-    user_data.setdefault(uid, {})
-    user_data[uid]["last_active"] = time.time()
+# game menu callback -> show games list
+@bot.callback_query_handler(func=lambda c: c.data == "game_menu")
+def show_game_menu(call):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    # Provide Word Guessing etc. (we keep others simple for now)
+    markup.add(
+        types.InlineKeyboardButton("🎲 Word Guessing", callback_data="game_word"),
+        types.InlineKeyboardButton("⭕ TicTacToe", callback_data="game_ttt")
+    )
+    markup.add(
+        types.InlineKeyboardButton("✊✌️✋ RPC", callback_data="game_rpc"),
+        types.InlineKeyboardButton("➗ Quick Math", callback_data="game_math")
+    )
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+    bot.answer_callback_query(call.id)
 
-    # Language & nickname setup
-    if user_data[uid].get("awaiting_lang_nick"):
-        parts = text.split()
-        if len(parts) >= 2:
-            lang = parts[0].lower()
-            nickname = " ".join(parts[1:]).replace("@","")
-            user_data[uid]["language"] = lang
-            user_data[uid]["nickname"] = nickname
-            user_data[uid]["awaiting_lang_nick"] = False
-            bot.send_message(message.chat.id, f"Alright {format_nickname(nickname)}, how are you? 😘", reply_to_message_id=message.message_id)
+# handle selecting TicTacToe from menu -> ask mode
+@bot.callback_query_handler(func=lambda c: c.data == "game_ttt")
+def on_select_ttt(call):
+    # show options Vs Miss OG and Vs Others
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("Vs Miss OG (Play vs bot)", callback_data="ttt_start_vs_bot"),
+        types.InlineKeyboardButton("Vs Others (Player vs Player)", callback_data="ttt_start_vs_players")
+    )
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+# Start modes
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ttt_start_"))
+def on_start_mode(call):
+    data = call.data
+    chat_id = call.message.chat.id
+    user = call.from_user
+    if data == "ttt_start_vs_bot":
+        # In private chat: start immediately for private; in group we also allow vs bot (bot plays O)
+        sent = start_ttt_game(chat_id, None, mode="vs_bot", starter_user=user)
+        bot.answer_callback_query(call.id, "Started TicTacToe vs Miss OG. You are ❌ (X).")
+    elif data == "ttt_start_vs_players":
+        # Create an invite message: starter becomes X; game created and waiting for other player to play (auto-join on first O move)
+        board = [" "] * 9
+        players = {'X': user.id, 'O': None}
+        text = f"TicTacToe — Player vs Player\n\n{render_board_text(board)}\n\n{get_display_name_from_user(user)} started the game as ❌ (X). Waiting for another player to join as ⭕ (O). First different user to press a cell will become O and can play."
+        markup = make_ttt_markup(board)
+        sent = bot.send_message(chat_id, text, reply_markup=markup)
+        ttt_games[(chat_id, sent.message_id)] = {
+            "board": board,
+            "mode": "vs_players",
+            "turn": "X",
+            "players": players,
+            "starter_id": user.id,
+            "message_id": sent.message_id,
+            "chat_id": chat_id
+        }
+        bot.answer_callback_query(call.id, "Player vs Player started. Waiting for opponent.")
+    else:
+        bot.answer_callback_query(call.id, "Unknown option.")
+
+# Handle ttt cell presses
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ttt_move:"))
+def on_ttt_move(call):
+    data = call.data.split(":")
+    if len(data) != 2:
+        bot.answer_callback_query(call.id, "Invalid move.")
+        return
+    idx = int(data[1])
+    chat_id = call.message.chat.id
+    message_id = call.message.message_id
+    key = (chat_id, message_id)
+    game = ttt_games.get(key)
+    user = call.from_user
+
+    if not game:
+        bot.answer_callback_query(call.id, "Game not found or already finished.")
+        return
+
+    board = game["board"]
+    mode = game["mode"]
+    turn = game["turn"]
+    players = game["players"]
+
+    # Check valid index
+    if idx < 0 or idx > 8:
+        bot.answer_callback_query(call.id, "Invalid cell.")
+        return
+
+    # If cell occupied
+    if board[idx] != " ":
+        bot.answer_callback_query(call.id, "Cell already taken.")
+        return
+
+    # Determine who is allowed to move
+    if mode == "vs_bot":
+        # In vs_bot, only the starter user (X) should make moves; after X moves, bot will move automatically.
+        starter_id = game["starter_id"]
+        # If message is in group, many users could press; restrict to starter only
+        if user.id != starter_id:
+            bot.answer_callback_query(call.id, "Only the player who started the game can play against Miss OG.")
+            return
+        # It's human's turn?
+        if turn != "X":
+            bot.answer_callback_query(call.id, "Wait for your turn.")
+            return
+        # Make human move as X
+        board[idx] = "X"
+        # Check winner
+        winner = check_winner(board)
+        if winner:
+            # X might win immediately
+            if winner == "X":
+                result_text = f"🎉 You win! {get_display_name_from_user(user)} beat Miss OG."
+            elif winner == "O":
+                result_text = "😢 You lose! Miss OG won."
+            else:  # Draw
+                result_text = "Game over: Draw 🤝"
+            end_game_update(chat_id, message_id, result_text)
+            # remove game state
+            ttt_games.pop(key, None)
+            bot.answer_callback_query(call.id)
+            return
+        # If not finished, bot (O) moves
+        # simple bot move: random available
+        avail = [i for i,c in enumerate(board) if c == " "]
+        if avail:
+            bot_idx = random.choice(avail)
+            board[bot_idx] = "O"
+            game["turn"] = "X"  # back to human
+            winner2 = check_winner(board)
+            if winner2:
+                if winner2 == "X":
+                    result_text = f"🎉 You win! {get_display_name_from_user(user)} beat Miss OG."
+                elif winner2 == "O":
+                    result_text = "😢 You lose! Miss OG won."
+                else:
+                    result_text = "Game over: Draw 🤝"
+                end_game_update(chat_id, message_id, result_text)
+                ttt_games.pop(key, None)
+                bot.answer_callback_query(call.id)
+                return
+        # Update message board and continue
+        text = f"TicTacToe — You vs Miss OG\n\n{render_board_text(board)}\n\nTurn: ❌ (X)"
+        markup = make_ttt_markup(board)
+        bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+        ttt_games[key] = game
+        bot.answer_callback_query(call.id)
+        return
+
+    else:  # mode == 'vs_players'
+        # If O player is not yet set and the pressing user is different than starter -> auto-join as O and treat move as their move if their turn
+        starter_id = game["starter_id"]
+        x_id = players.get("X")
+        o_id = players.get("O")
+        # Determine caller role
+        caller_role = None
+        if user.id == x_id:
+            caller_role = "X"
+        elif o_id and user.id == o_id:
+            caller_role = "O"
         else:
-            bot.send_message(message.chat.id, "Please provide both language and nickname, e.g., English OG")
+            # not previously joined as O
+            if user.id != x_id and o_id is None:
+                # auto-join as O and allow them to play if it's O's turn; otherwise they become O and wait
+                players["O"] = user.id
+                o_id = user.id
+                caller_role = "O"
+            else:
+                # someone else (not starter and O already assigned) trying to play
+                bot.answer_callback_query(call.id, "You are not part of this game.")
+                return
+
+        # Now ensure it's caller's turn
+        if game["turn"] != caller_role:
+            bot.answer_callback_query(call.id, "Wait for your turn.")
+            return
+
+        # place move
+        board[idx] = caller_role
+        # switch turn
+        game["turn"] = "O" if game["turn"] == "X" else "X"
+
+        # check winner
+        winner = check_winner(board)
+        if winner:
+            # Build proper display names
+            x_user = None
+            o_user = None
+            try:
+                x_user = bot.get_chat_member(chat_id, players["X"]).user
+            except Exception:
+                x_user = None
+            if players.get("O"):
+                try:
+                    o_user = bot.get_chat_member(chat_id, players["O"]).user
+                except Exception:
+                    o_user = None
+
+            x_name = get_display_name_from_user(x_user) if x_user else str(players.get("X"))
+            o_name = get_display_name_from_user(o_user) if o_user else str(players.get("O"))
+
+            if winner == "X":
+                # X won
+                if players.get("O") and players.get("X"):
+                    result_text = f"🎉 {x_name} won against {o_name}!"
+                else:
+                    # shouldn't happen
+                    result_text = f"🎉 {x_name} wins!"
+            elif winner == "O":
+                if players.get("O") and players.get("X"):
+                    result_text = f"🎉 {o_name} won against {x_name}!"
+                else:
+                    result_text = f"🎉 {o_name} wins!"
+            else:  # Draw
+                # draw case handled below but keep for completeness
+                result_text = f"Game over: Draw 🤝 (between {x_name} and {o_name})"
+            end_game_update(chat_id, message_id, result_text)
+            ttt_games.pop(key, None)
+            bot.answer_callback_query(call.id)
+            return
+
+        # if draw
+        if check_winner(board) == "Draw":
+            x_user = None
+            o_user = None
+            try:
+                x_user = bot.get_chat_member(chat_id, players["X"]).user
+            except Exception:
+                x_user = None
+            if players.get("O"):
+                try:
+                    o_user = bot.get_chat_member(chat_id, players["O"]).user
+                except Exception:
+                    o_user = None
+            x_name = get_display_name_from_user(x_user) if x_user else str(players.get("X"))
+            o_name = get_display_name_from_user(o_user) if o_user else str(players.get("O"))
+            result_text = f"Game over: Draw 🤝 (between {x_name} and {o_name})"
+            end_game_update(chat_id, message_id, result_text)
+            ttt_games.pop(key, None)
+            bot.answer_callback_query(call.id)
+            return
+
+        # otherwise update board and continue
+        text = f"TicTacToe — Player vs Player\n\n{render_board_text(board)}\n\nTurn: {'❌ (X)' if game['turn']=='X' else '⭕ (O)'}"
+        markup = make_ttt_markup(board)
+        bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+        # store updated players / board
+        ttt_games[key] = game
+        bot.answer_callback_query(call.id)
         return
 
-    # Abusive filter
-    if is_abusive(text):
-        if not user_data[uid].get("warned", False):
-            bot.send_message(message.chat.id, "Hey! Don't use bad words! 😠")
-            user_data[uid]["warned"] = True
+# Play again and menu handlers
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ttt_playagain:") or c.data.startswith("ttt_menu:"))
+def on_playagain_or_menu(call):
+    data = call.data
+    parts = data.split(":")
+    if len(parts) != 2:
+        bot.answer_callback_query(call.id, "Invalid command.")
         return
-    else:
-        user_data[uid]["warned"] = False
+    cmd, msgid_s = parts
+    message_id = int(msgid_s)
+    chat_id = call.message.chat.id
+    key = (chat_id, message_id)
+    game = ttt_games.get(key)
 
-    # AI trigger
-    triggers = ["miss og","missog","baby", f"@{bot.get_me().username.lower()}", "miss og bot"]
-    if any(t in text.lower() for t in triggers):
-        reply = generate_ai_response(text, uid)
-        bot.send_message(message.chat.id, reply, reply_to_message_id=message.message_id)
-    else:
-        bot.send_message(message.chat.id, f"{get_mention(message)}, please tag me or say 'MISS OG' to chat 😘", reply_to_message_id=message.message_id)
+    if cmd == "ttt_playagain":
+        # If game state missing, we can't reset players; create fresh based on previous if existed
+        if not game:
+            # Try to rebuild minimal info from message author (starter)
+            # For safety, start a fresh vs_players with caller as starter
+            starter = call.from_user
+            board = [" "] * 9
+            players = {'X': starter.id, 'O': None}
+            text = f"TicTacToe — Player vs Player\n\n{render_board_text(board)}\n\n{get_display_name_from_user(starter)} started the game as ❌ (X). Waiting for another player to join as ⭕ (O). First different user to press a cell will become O and can play."
+            sent = bot.send_message(chat_id, text, reply_markup=make_ttt_markup(board))
+            ttt_games[(chat_id, sent.message_id)] = {
+                "board": board,
+                "mode": "vs_players",
+                "turn": "X",
+                "players": players,
+                "starter_id": starter.id,
+                "message_id": sent.message_id,
+                "chat_id": chat_id
+            }
+            bot.answer_callback_query(call.id, "Started a new Player-vs-Player game.")
+            return
+        # Reset board but keep same players
+        game["board"] = [" "] * 9
+        game["turn"] = "X"
+        # Edit message to new board
+        text = f"TicTacToe — Restarted\n\n{render_board_text(game['board'])}\n\nTurn: ❌ (X)"
+        bot.edit_message_text(text, chat_id, message_id, reply_markup=make_ttt_markup(game["board"]))
+        ttt_games[key] = game
+        bot.answer_callback_query(call.id, "Game restarted.")
+        return
 
-# ================== FLASK / WEBHOOK ==================
+    if cmd == "ttt_menu":
+        # Remove any stored state for this message
+        ttt_games.pop(key, None)
+        # Show main welcome menu again (we'll just edit to show the menu)
+        bot.edit_message_text("Back to menu.", chat_id, message_id, reply_markup=None)
+        send_welcome(chat_id, is_group=(call.message.chat.type != "private"))
+        bot.answer_callback_query(call.id)
+        return
+
+# placeholders for other games
+@bot.callback_query_handler(func=lambda c: c.data in ("game_word","game_rpc","game_math"))
+def other_games_placeholder(call):
+    bot.answer_callback_query(call.id, "This game is coming soon 🎮")
+
+# Flask webhook endpoints
 app = Flask(__name__)
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("UTF-8")
@@ -488,13 +460,14 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Miss OG is alive 💖"
+    return "Miss OG TicTacToe ready 💖"
 
 if __name__ == "__main__":
+    # If using a hosting that requires webhook, set env var RENDER_EXTERNAL_URL or similar and configure webhook manually
     render_url = os.getenv("RENDER_EXTERNAL_URL")
     if render_url:
-        webhook_url = f"{render_url}/{BOT_TOKEN}"
         bot.remove_webhook()
-        bot.set_webhook(url=webhook_url)
-        print(f"Webhook set to: {webhook_url}")
+        bot.set_webhook(url=f"{render_url}/{BOT_TOKEN}")
+        print("Webhook set.")
+    print("Starting app...")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
